@@ -1,0 +1,15 @@
+{application, erlang_ubx,
+ [{description, "An OTP library for interacting with UBlox GPS receivers using the UBX protocol"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
