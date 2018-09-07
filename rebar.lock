@@ -1,8 +1,20 @@
-[{<<"erlang_ale">>,
+{"1.1.0",
+[{<<"ebus">>,
+  {git,"https://github.com/helium/ebus",
+       {ref,"235348e05563fa8c5914ec6e1d17344f17bce57f"}},
+  0},
+ {<<"erlang_ale">>,
   {git,"https://github.com/helium/erlang_ale",
        {ref,"a62d152c92469a12e8d9676f4a89f9db7dfc0b94"}},
   0},
+ {<<"goldrush">>,{pkg,<<"goldrush">>,<<"0.1.9">>},2},
+ {<<"lager">>,{pkg,<<"lager">>,<<"3.6.4">>},1},
  {<<"serial">>,
   {git,"https://github.com/Vagabond/erlang-serial",
        {ref,"d9e44d1b89a6c3de092cb2f7f04b01efc27a4209"}},
-  0}].
+  0}]}.
+[
+{pkg_hash,[
+ {<<"goldrush">>, <<"F06E5D5F1277DA5C413E84D5A2924174182FB108DABB39D5EC548B27424CD106">>},
+ {<<"lager">>, <<"CED6E98070FB4E58EE93174D006D46479C79844DF7FC17FA4FEFC1049A320D88">>}]}
+].
