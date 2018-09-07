@@ -1,4 +1,4 @@
-{application, erlang_ubx,
+{application, ubx,
  [{description, "An OTP library for interacting with UBlox GPS receivers using the UBX protocol"},
   {vsn, "0.1.0"},
   {registered, []},

@@ -1,4 +1,4 @@
--module(erlang_ubx).
+-module(ubx).
 -behaviour(gen_server).
 
 -define(U1, 8/integer-unsigned). %% unsigned char
@@ -242,7 +242,7 @@ parse(?NAV, ?PVT, <<ITOW:?U4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, S
               [Valid, TimeAccuracy, Nano, FixType, Flags, Flags2]),
     io:format("NumSatellites ~p, Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft~n",
               [NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
-    io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n", 
+    io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n",
               [VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
     {nav_pvt, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy}};
 %% UBX-NAV-POSLLH
