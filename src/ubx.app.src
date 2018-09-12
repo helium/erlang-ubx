@@ -6,7 +6,9 @@
    [kernel,
     stdlib,
     serial,
-    erlang_ale
+    erlang_ale,
+    lager,
+    ebus
    ]},
   {env,[]},
   {modules, []},
