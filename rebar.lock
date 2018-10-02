@@ -1,6 +1,6 @@
 [{<<"erlang_ale">>,
   {git,"https://github.com/helium/erlang_ale",
-       {ref,"a62d152c92469a12e8d9676f4a89f9db7dfc0b94"}},
+       {ref,"7446b2df79411992e8efc34325e35437dcf536c1"}},
   0},
  {<<"serial">>,
   {git,"https://github.com/Vagabond/erlang-serial",
