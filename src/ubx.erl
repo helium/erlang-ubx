@@ -9,7 +9,7 @@
 -define(X2, 16/integer-little). %% bitfields are little endian
 -define(U4, 32/integer-unsigned-little). %% unsigned long
 -define(I4, 32/integer-signed-little). %% signed long
--define(X4, 32/integer-little). %% bitfields are little endian
+-define(X4, 32/integer-little). %% bitfields are little endian with big endian fields
 -define(R4, 32/float-little). %% IEEE 754 single precision (endianness??)
 -define(R8, 64/float-little). %% IEEE 754 double precision (endianness??)
 
@@ -36,15 +36,19 @@
 -define(STATUS, 16#03).
 -define(POSLLH, 16#02).
 -define(SOL, 16#06).
+-define(CFG2, 16#09).
+-define(TP5, 16#31).
 
 -record(state, {
           device :: port() | pid(),
           devicetype :: spi | serial,
           buffer = <<>> :: binary(),
-          controlling_process :: pid()
+          controlling_process :: pid(),
+          ack,
+          poll
          }).
 
--export([start_link/4, enable_message/3, disable_message/2, poll_message/2]).
+-export([start_link/4, enable_message/3, disable_message/2, poll_message/2, poll_message/3, parse/1]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -61,15 +65,79 @@ disable_message(Msg, Pid) ->
 
 poll_message(Msg, Pid) ->
     {MsgClass, MsgID} = resolve(Msg),
-    gen_server:call(Pid, {poll_message, MsgClass, MsgID}).
+    gen_server:call(Pid, {poll_message, MsgClass, MsgID, <<>>}).
+
+poll_message(Msg, Payload, Pid) ->
+    {MsgClass, MsgID} = resolve(Msg),
+    gen_server:call(Pid, {poll_message, MsgClass, MsgID, Payload}).
+
 
 init([spi, Filename, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
     State = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess},
-    %% only UBX on spi port
-    send(State, <<16#b5, 16#62, 16#6, 0, 16#14, 0, 4, 0, 0, 0, 0, 16#32, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 16#52, 16#94>>),
-    {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
-    {ok, NewState};
+    {ok, Gpio69} = gpio:start_link(69, input),
+    gpio:register_int(Gpio69),
+    gpio:set_int(Gpio69, rising),
+    Port = 4,
+    Reserved1 = <<0>>,
+    BytesWaiting = 1,
+    PIO = 14, %% EXTINT1 on NEO-M8T
+    Polarity = 0, %% active high
+    Active = 1,
+    <<TXReadyInt:16/integer-unsigned-big>> = <<BytesWaiting:9/integer-unsigned-big, PIO:5/integer-unsigned-big, Polarity:1/integer, Active:1/integer>>,
+    %% So apparently it's hard to pack the bits into the right order because the bitfield is big endian (MSB) but the byte order is little endian
+    %TXReady = <<185, 0>>,
+    TXReady = <<TXReadyInt:16/integer-unsigned-little>>,
+    Mode = 0,
+    Reserved2 = <<0, 0, 0, 0>>,
+    InProtoMask = 1, %% only UBX
+    OutProtoMask = 1, %% only UBX
+    Flags = 0,
+    Reserved3 = <<0, 0>>,
+    send(State, frame(?CFG, ?PRT, <<Port:?U1, Reserved1/binary, TXReady/binary, Mode:?X4, Reserved2/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, Reserved3/binary>>)),
+    receive
+        {gpio_interrupt,69,rising} ->
+            {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
+            TPIdx = 0,
+            Version = 1,
+            Reserved = <<0, 0>>,
+            AntennaCableDelay = 0, %% XXX in nanoseconds
+            RFGroupDelay = 0, %% read only?
+            FreqPeriod = 1, %% 1mHz
+            PulseLenRatio = 0, %% disable the pulse when not locked
+            FreqPeriodLock = 8000000, %% 4mHz
+            PulseLenRatioLock = 2147483648, %% 50% duty cycle when locked
+            UserConfigDelay = 0,
+            TPActive = 1,
+            LockGNSSFreq = 1,
+            LockedOtherSet = 1,
+            IsFreq = 1,
+            IsLength = 0,
+            AlignToToW = 1,
+            ClockPolarity = 1,
+            GridUTCGNSS = 0,
+            SyncMode = 1, %% Only use the locked mode while we have a lock
+            <<TPFlags:32/integer-unsigned-big>> = <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>>,
+            send(State, frame(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>)),
+            receive
+                {gpio_interrupt,69,rising} ->
+                    {NewState2, {ack, ?CFG, ?TP5}} = get_ack(State),
+                    %% PIO changes don't take effect until a config save
+                    send(NewState, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
+                    receive
+                        {gpio_interrupt,69,rising} ->
+                            {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
+                            {ok, NewState3}
+                    after 5000 ->
+                              {stop, {error, timeout}}
+                    end
+            after 5000 ->
+                      {stop, {error, timeout}}
+            end
+    after 5000 ->
+              {stop, {error, timeout}}
+    end;
+
 init([serial, Filename, Options, ControllingProcess]) ->
     SerialPort = serial:start([{open, Filename} | Options]),
     State = #state{device=SerialPort, devicetype=serial, controlling_process=ControllingProcess},
@@ -84,6 +152,40 @@ init([serial, Filename, Options, ControllingProcess]) ->
     {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
     {ok, NewState}.
 
+handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
+    %% TODO check if there's more than one packet waiting?
+    case get_packet(State) of
+        {NewState, {error, _}} ->
+            {noreply, NewState};
+        {NewState, {ack, ?CFG, ?MSG}} ->
+            case Ack of
+                {From, Ref} ->
+                    erlang:cancel_timer(Ref),
+                    gen_server:reply(From, ok),
+                    {noreply, NewState#state{ack=undefined}};
+                undefined ->
+                    {noreply, NewState}
+            end;
+        {NewState, {nack, ?CFG, ?MSG}} ->
+            case Ack of
+                {From, Ref} ->
+                    erlang:cancel_timer(Ref),
+                    gen_server:reply(From, {error, nack}),
+                    {noreply, State#state{ack=undefined}};
+                undefined ->
+                    {noreply, State}
+            end;
+        {NewState, Packet = {Msg, _}} ->
+            case Poll of
+                {Msg, From, Ref} ->
+                    erlang:cancel_timer(Ref),
+                    gen_server:reply(From, {ok, Packet}),
+                    {noreply, State#state{poll=undefined}};
+                _ ->
+                    State#state.controlling_process ! Packet,
+                    {noreply, NewState}
+            end
+    end;
 handle_info({data, Bytes}, State) ->
     case get_packet(State#state{buffer= <<(State#state.buffer)/binary, Bytes/binary>>}) of
         {NewState, {error, _}} ->
@@ -91,44 +193,70 @@ handle_info({data, Bytes}, State) ->
         {NewState, Packet} ->
             State#state.controlling_process ! Packet,
             {noreply, NewState}
-    end.
+    end;
+handle_info(ack_timeout, State = #state{ack={From, _Ref}}) ->
+    gen_server:reply(From, {error, timeout}),
+    {noreply, State#state{ack=undefined}};
+handle_info(poll_timeout, State = #state{poll={_Msg, From, _Ref}}) ->
+    gen_server:reply(From, {error, timeout}),
+    {noreply, State#state{poll=undefined}};
+handle_info(_Msg, State) ->
+    {noreply, State}.
 
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_call({enable_message, MsgClass, MsgID, Frequency}, _From, State) ->
-    send(State, frame(?CFG, ?MSG, <<MsgClass, MsgID, Frequency>>)),
-    case get_ack(State) of
-        {NewState, {ack, ?CFG, ?MSG}} ->
-            {reply, ok, NewState};
-        {NewState, {nack, ?CFG, ?MSG}} ->
-            {reply, {error, nack}, NewState};
-        {NewState, {error, Reason}} ->
-            {reply, {error, Reason}, NewState}
+handle_call({enable_message, MsgClass, MsgID, Frequency}, From, State) ->
+    case State#state.ack of
+        undefined ->
+            send(State, frame(?CFG, ?MSG, <<MsgClass, MsgID, Frequency>>)),
+            {noreply, register_ack(From, State)};
+        _ ->
+            {reply, {error, busy}, State}
     end;
-handle_call({poll_message, MsgClass, MsgID}, _From, State) ->
-    Msg = resolve(MsgClass, MsgID),
-    send(State, frame(MsgClass, MsgID, <<>>)),
-    case get_packet(State) of
-        {NewState, {Msg, Data}} ->
-            {reply, {Msg, Data}, NewState};
-        {NewState, {error, Reason}} ->
-            {reply, {error, Reason}, NewState};
-        {NewState, {OtherMsg, Data}} ->
-            NewState#state.controlling_process ! {OtherMsg, Data},
-            {reply, {error, timeout}, NewState}
+    %case get_ack(State) of
+        %{NewState, {ack, ?CFG, ?MSG}} ->
+            %{reply, ok, NewState};
+        %{NewState, {ack, _, _}} ->
+            %{reply, {error, unknown_ack}, NewState};
+        %{NewState, {nack, ?CFG, ?MSG}} ->
+            %{reply, {error, nack}, NewState};
+        %{NewState, {error, Reason}} ->
+            %{reply, {error, Reason}, NewState}
+    %end;
+handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
+    case State#state.poll of
+        undefined ->
+            Msg = resolve(MsgClass, MsgID),
+            send(State, frame(MsgClass, MsgID, Payload)),
+            {noreply, register_poll(Msg, From, State)};
+        _ ->
+            {noreply, {error, busy}, State}
     end;
+    %case get_packet(State) of
+        %{NewState, {Msg, Data}} ->
+            %{reply, {Msg, Data}, NewState};
+        %{NewState, {ack, _, _}} ->
+            %{reply, {error, unknown_ack}, NewState};
+        %{NewState, {error, Reason}} ->
+            %{reply, {error, Reason}, NewState};
+        %{NewState, {OtherMsg, Data}} ->
+            %NewState#state.controlling_process ! {OtherMsg, Data},
+            %{reply, {error, timeout}, NewState}
+    %end;
 
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
 send(#state{devicetype=spi, device=Device}, Packet) ->
+    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet);
 send(#state{devicetype=serial, device=Device}, Packet) ->
     Device ! {send, Packet}.
 
 recv(State=#state{devicetype=spi, device=Device}, Length) ->
+    %io:format("SPI read ~p~n", [Length]),
     {State, spi:transfer(Device, binary:copy(<<255>>, Length))};
 recv(State=#state{devicetype=serial, buffer=Buffer}, Length) ->
     case byte_size(Buffer) < Length of
@@ -167,12 +295,13 @@ get_ack(State) ->
         {NewState, {error, _} = Error} ->
             {NewState, Error};
         {NewState, Other} ->
+            io:format("other packet ~p~n", [Other]),
             NewState#state.controlling_process ! {packet, Other},
             get_ack(NewState)
     end.
 
 get_packet(State) ->
-    get_packet(State, <<>>, 10).
+    get_packet(State, <<>>, 10000).
 
 get_packet(State, _, 0) ->
     {State, {error, timeout}};
@@ -183,7 +312,7 @@ get_packet(State, Acc, Count) ->
         {error, _} ->
             {NewState, Reply};
         _ ->
-            case list_to_binary([Reply, Acc]) of
+            case list_to_binary([Acc, Reply]) of
                 <<255, 255, 255, 255, 255, 255>> ->
                     get_packet(NewState, Acc, Count - 1);
                 <<_:8/integer, _:8/integer, _:8/integer, _:8/integer, _:8/integer, ?HEADER1>> ->
@@ -197,18 +326,18 @@ get_packet(State, Acc, Count) ->
                 <<_:8/integer, ?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>> ->
                     get_packet(NewState, <<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>>, Count - 1);
                 <<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, Length:?U2>> = Header ->
-                    {NewState2, Body} = case is_spi(State) andalso Length + 2 > 255 of
+                    {NewState2, Body} = case is_spi(State) andalso Length + 2 > 128 of
                                             true ->
-                                                {_, B1} = recv(NewState, 255),
-                                                {_, B2} = recv(NewState, (Length + 2) rem 255),
+                                                {_, B1} = recv(NewState, 128),
+                                                {_, B2} = recv(NewState, (Length + 2) rem 128),
                                                 {NewState, <<B1/binary, B2/binary>>};
                                             false ->
                                                 recv(NewState, Length + 2)
                                         end,
                     {NewState2, parse(<<Header/binary, Body/binary>>)};
                 Other ->
-                    io:format("goop ~w~n", [Other]),
-                    {NewState, {error, {goop, Other}}}
+                    %{NewState, {error, {goop, Other}}}
+                    get_packet(NewState, <<>>, Count - 1)
             end
     end.
 
@@ -236,15 +365,15 @@ parse(?NAV, ?PVT, <<ITOW:?U4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, S
                     VerticalAccuracy:?U4, VelocityN:?I4, VelocityE:?I4, VelocityD:?I4, Speed:?I4,
                     Heading:?I4, SpeedAccuracy:?U4, HeadingAccuracy:?U4, PositionDOP:?U2, _:6/binary,
                     VehicleHeading:?I4, MagneticDeclination:?I2, MagneticAccuracy:?U2>>) ->
-    io:format("ITOW ~p, Year ~p, Month ~p, Day ~p, Hour ~p, Minute ~p, Second ~p~n",
-              [ITOW, Year, Month, Day, Hour, Min, Sec]),
-    io:format("Valid ~p, TimeAccuracy ~p, Nano ~p, FixTime ~p, Flags ~p, Flags2 ~p~n",
-              [Valid, TimeAccuracy, Nano, FixType, Flags, Flags2]),
-    io:format("NumSatellites ~p, Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft~n",
-              [NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
-    io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n",
-              [VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
-    {nav_pvt, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy}};
+    %io:format("ITOW ~p, Year ~p, Month ~p, Day ~p, Hour ~p, Minute ~p, Second ~p~n",
+              %[ITOW, Year, Month, Day, Hour, Min, Sec]),
+    %io:format("Valid ~p, TimeAccuracy ~p, Nano ~p, FixTime ~p, Flags ~p, Flags2 ~p~n",
+              %[Valid, TimeAccuracy, Nano, FixType, Flags, Flags2]),
+    %io:format("NumSatellites ~p, Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft~n",
+              %[NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
+    %io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n",
+              %[VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
+    {nav_pvt, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy, TimeAccuracy}};
 %% UBX-NAV-POSLLH
 parse(?NAV, ?POSLLH, <<ITOW:?U4, Longitude:?I4, Latitude:?I4, Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4, VerticalAccuracy:?U4>>) ->
     %io:format("Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft, Vertical Accuracy ~f~n",
@@ -277,6 +406,17 @@ parse(?NAV, ?SAT, <<ITOW:?U4, Version:?U1, NumSatellites:?U1, _Reserved:2/binary
     io:format("Satellites in view ~p~n", [NumSatellites]),
     parse_satellites(Tail),
     {nav_sat, lol};
+parse(?CFG, ?PRT, <<4:?U1, Reserved1:?U1, TXReady:?X2, Mode:?X4, Reserved2:4/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, Reserved3:2/binary>>) ->
+    io:format("SPI port configuration TXReady ~p Mode ~p  InProtoMask ~p OutProtoMask ~p Flags ~p~n", [TXReady, Mode, InProtoMask, OutProtoMask, Flags]),
+    <<Count:9/integer-unsigned-big, PIO:5/integer-unsigned-big, POL:1/integer, EN:1/integer>> = <<TXReady:16/integer-big>>,
+    io:format("TX Ready enabled: ~p Polarity ~p PIO ~p Count ~p~n", [EN, POL, PIO, Count]),
+    {cfg_port, lol};
+parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved:2/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>) ->
+    io:format("Time pulse ~p, version ~p frequency ~p pulse length ~p~n", [TPIdx, Version, FreqPeriod, PulseLenRatio]),
+
+    <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>> = <<TPFlags:32/integer-unsigned-big>>,
+    io:format("SyncMode ~p, Grid ~p Polarity ~p AlignToW ~p IsLength ~p IsFreq ~p, LockedOtherSet ~p LockGNSS, ~p TPActive ~p~n", [SyncMode, GridUTCGNSS, ClockPolarity, AlignToToW, IsLength, IsFreq, LockedOtherSet, LockGNSSFreq, TPActive]),
+    {cfg_tp5, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
@@ -308,10 +448,26 @@ checksum(<<H:8/integer-unsigned, Tail/binary>>, A, B) ->
 
 resolve(nav_pvt) -> {?NAV, ?PVT};
 resolve(nav_sol) -> {?NAV, ?SOL};
+resolve(nav_sat) -> {?NAV, ?SAT};
 resolve(nav_posllh) -> {?NAV, ?POSLLH};
-resolve(mon_ver) -> {?MON, ?VER}.
+resolve(mon_ver) -> {?MON, ?VER};
+resolve(cfg_port) -> {?CFG, ?PRT};
+resolve(cfg_tp5) -> {?CFG, ?TP5};
+resolve(tim_tm2) -> {?TIM, ?TM2}.
 
 resolve(?NAV, ?PVT) -> nav_pvt;
 resolve(?NAV, ?SOL) -> nav_sol;
+resolve(?NAV, ?SAT) -> nav_sat;
 resolve(?NAV, ?POSLLH) -> nav_posllh;
-resolve(?MON, ?VER) -> mon_ver.
+resolve(?MON, ?VER) -> mon_ver;
+resolve(?CFG, ?PRT) -> cfg_port;
+resolve(?CFG, ?TP5) -> cfg_tp5;
+resolve(?TIM, ?TM2) -> tim_tm2.
+
+register_ack(From, State) ->
+    Ref = erlang:send_after(5000, self(), ack_timeout),
+    State#state{ack={From, Ref}}.
+
+register_poll(Msg, From, State) ->
+    Ref = erlang:send_after(5000, self(), poll_timeout),
+    State#state{poll={Msg, From, Ref}}.
