@@ -1,11 +1,6 @@
-.PHONY: deps compile
+.PHONY: compile
 
 REBAR=./rebar3
-
-deps:
-	$(REBAR) get-deps
-	$(REBAR) upgrade
-	$(REBAR) lock
 
 compile:
 	$(REBAR) compile
