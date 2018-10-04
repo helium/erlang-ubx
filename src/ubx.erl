@@ -38,6 +38,7 @@
 -define(SOL, 16#06).
 -define(CFG2, 16#09).
 -define(TP5, 16#31).
+-define(ANT, 16#13).
 
 -record(state, {
           device :: port() | pid(),
@@ -45,7 +46,8 @@
           buffer = <<>> :: binary(),
           controlling_process :: pid(),
           ack,
-          poll
+          poll,
+          gpio
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, poll_message/2, poll_message/3, parse/1]).
@@ -74,14 +76,17 @@ poll_message(Msg, Payload, Pid) ->
 
 init([spi, Filename, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
-    State = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess},
-    {ok, Gpio69} = gpio:start_link(69, input),
-    gpio:register_int(Gpio69),
-    gpio:set_int(Gpio69, rising),
+    {ok, Gpio68} = gpio:start_link(68, input),
+    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio68},
+    gpio:register_int(Gpio68),
+    gpio:set_int(Gpio68, rising),
+    %% disable LNA_EN pin function so we can repurpose it as TX_READY
+    send(State0, frame(?CFG, ?ANT, <<0, 0, 16#f0, 16#39>>)),
+    {State, {ack, ?CFG, ?ANT}} = get_ack(State0),
     Port = 4,
     Reserved1 = <<0>>,
     BytesWaiting = 1,
-    PIO = 14, %% EXTINT1 on NEO-M8T
+    PIO = 16, %% LNA_EN on NEO-M8T
     Polarity = 0, %% active high
     Active = 1,
     <<TXReadyInt:16/integer-unsigned-big>> = <<BytesWaiting:9/integer-unsigned-big, PIO:5/integer-unsigned-big, Polarity:1/integer, Active:1/integer>>,
@@ -95,48 +100,41 @@ init([spi, Filename, Options, ControllingProcess]) ->
     Flags = 0,
     Reserved3 = <<0, 0>>,
     send(State, frame(?CFG, ?PRT, <<Port:?U1, Reserved1/binary, TXReady/binary, Mode:?X4, Reserved2/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, Reserved3/binary>>)),
-    receive
-        {gpio_interrupt,69,rising} ->
-            {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
-            TPIdx = 0,
-            Version = 1,
-            Reserved = <<0, 0>>,
-            AntennaCableDelay = 0, %% XXX in nanoseconds
-            RFGroupDelay = 0, %% read only?
-            FreqPeriod = 1, %% 1mHz
-            PulseLenRatio = 0, %% disable the pulse when not locked
-            FreqPeriodLock = 8000000, %% 4mHz
-            PulseLenRatioLock = 2147483648, %% 50% duty cycle when locked
-            UserConfigDelay = 0,
-            TPActive = 1,
-            LockGNSSFreq = 1,
-            LockedOtherSet = 1,
-            IsFreq = 1,
-            IsLength = 0,
-            AlignToToW = 1,
-            ClockPolarity = 1,
-            GridUTCGNSS = 0,
-            SyncMode = 1, %% Only use the locked mode while we have a lock
-            <<TPFlags:32/integer-unsigned-big>> = <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>>,
-            send(State, frame(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>)),
-            receive
-                {gpio_interrupt,69,rising} ->
-                    {NewState2, {ack, ?CFG, ?TP5}} = get_ack(State),
-                    %% PIO changes don't take effect until a config save
-                    send(NewState, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
-                    receive
-                        {gpio_interrupt,69,rising} ->
-                            {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
-                            {ok, NewState3}
-                    after 5000 ->
-                              {stop, {error, timeout}}
-                    end
-            after 5000 ->
-                      {stop, {error, timeout}}
-            end
-    after 5000 ->
-              {stop, {error, timeout}}
-    end;
+    %self() ! {gpio_interrupt,68,rising},
+    {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
+    TPIdx = 0,
+    Version = 1,
+    Reserved = <<0, 0>>,
+    AntennaCableDelay = 0, %% XXX in nanoseconds
+    RFGroupDelay = 0, %% read only?
+    FreqPeriod = 1, %% 1mHz
+    PulseLenRatio = 0, %% disable the pulse when not locked
+    FreqPeriodLock = 8000000, %% 4mHz
+    PulseLenRatioLock = 2147483648, %% 50% duty cycle when locked
+    UserConfigDelay = 0,
+    TPActive = 1,
+    LockGNSSFreq = 1,
+    LockedOtherSet = 1,
+    IsFreq = 1,
+    IsLength = 0,
+    AlignToToW = 1,
+    ClockPolarity = 1,
+    GridUTCGNSS = 0,
+    SyncMode = 1, %% Only use the locked mode while we have a lock
+    <<TPFlags:32/integer-unsigned-big>> = <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>>,
+    send(NewState, frame(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>)),
+
+    {NewState2, {ack, ?CFG, ?TP5}} = get_ack(State),
+    %% PIO changes don't take effect until a config save
+    send(NewState2, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
+    {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
+    case gpio:read(Gpio68) of
+        1 ->
+            self() ! {gpio_interrupt,68,rising};
+        0 ->
+            ok
+    end,
+    {ok, NewState3};
 
 init([serial, Filename, Options, ControllingProcess]) ->
     SerialPort = serial:start([{open, Filename} | Options]),
@@ -152,39 +150,50 @@ init([serial, Filename, Options, ControllingProcess]) ->
     {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
     {ok, NewState}.
 
-handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
-    %% TODO check if there's more than one packet waiting?
-    case get_packet(State) of
+handle_info({gpio_interrupt,68,rising}, State = #state{ack=Ack, poll=Poll}) ->
+    Result = case get_packet(State) of
         {NewState, {error, _}} ->
-            {noreply, NewState};
+                        {stop, NewState};
         {NewState, {ack, ?CFG, ?MSG}} ->
+                        io:format("ack~n"),
             case Ack of
                 {From, Ref} ->
                     erlang:cancel_timer(Ref),
                     gen_server:reply(From, ok),
-                    {noreply, NewState#state{ack=undefined}};
+                    {ok, NewState#state{ack=undefined}};
                 undefined ->
-                    {noreply, NewState}
+                    {ok, NewState}
             end;
         {NewState, {nack, ?CFG, ?MSG}} ->
+                        io:format("nack~n"),
             case Ack of
                 {From, Ref} ->
                     erlang:cancel_timer(Ref),
                     gen_server:reply(From, {error, nack}),
-                    {noreply, State#state{ack=undefined}};
+                    NewState#state{ack=undefined};
                 undefined ->
-                    {noreply, State}
+                    {ok, NewState}
             end;
         {NewState, Packet = {Msg, _}} ->
+                        io:format("packet~n"),
             case Poll of
                 {Msg, From, Ref} ->
                     erlang:cancel_timer(Ref),
                     gen_server:reply(From, {ok, Packet}),
-                    {noreply, State#state{poll=undefined}};
+                    {ok, NewState#state{poll=undefined}};
                 _ ->
-                    State#state.controlling_process ! Packet,
-                    {noreply, NewState}
+                    NewState#state.controlling_process ! Packet,
+                    {ok, NewState}
             end
+    end,
+    %% check if there's more than one packet waiting?
+    case Result of
+        {ok, NewerState} ->
+            %io:format("more data~n"),
+            handle_info({gpio_interrupt, 68, rising}, NewerState);
+            %{noreply, NewerState};
+        {stop, NewerState} ->
+            {noreply, NewerState}
     end;
 handle_info({data, Bytes}, State) ->
     case get_packet(State#state{buffer= <<(State#state.buffer)/binary, Bytes/binary>>}) of
@@ -210,21 +219,12 @@ handle_cast(_Msg, State) ->
 handle_call({enable_message, MsgClass, MsgID, Frequency}, From, State) ->
     case State#state.ack of
         undefined ->
+            io:format("hello~n"),
             send(State, frame(?CFG, ?MSG, <<MsgClass, MsgID, Frequency>>)),
             {noreply, register_ack(From, State)};
         _ ->
             {reply, {error, busy}, State}
     end;
-    %case get_ack(State) of
-        %{NewState, {ack, ?CFG, ?MSG}} ->
-            %{reply, ok, NewState};
-        %{NewState, {ack, _, _}} ->
-            %{reply, {error, unknown_ack}, NewState};
-        %{NewState, {nack, ?CFG, ?MSG}} ->
-            %{reply, {error, nack}, NewState};
-        %{NewState, {error, Reason}} ->
-            %{reply, {error, Reason}, NewState}
-    %end;
 handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
     case State#state.poll of
         undefined ->
@@ -234,18 +234,6 @@ handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
         _ ->
             {noreply, {error, busy}, State}
     end;
-    %case get_packet(State) of
-        %{NewState, {Msg, Data}} ->
-            %{reply, {Msg, Data}, NewState};
-        %{NewState, {ack, _, _}} ->
-            %{reply, {error, unknown_ack}, NewState};
-        %{NewState, {error, Reason}} ->
-            %{reply, {error, Reason}, NewState};
-        %{NewState, {OtherMsg, Data}} ->
-            %NewState#state.controlling_process ! {OtherMsg, Data},
-            %{reply, {error, timeout}, NewState}
-    %end;
-
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
@@ -287,7 +275,7 @@ frame(Class, Id, Payload) ->
     <<?HEADER1, ?HEADER2, Class, Id, (byte_size(Payload)):?U2, Payload/binary, CKA, CKB>>.
 
 get_ack(State) ->
-    case get_packet(State) of
+    case get_packet(State, <<>>, 10000) of
         {NewState, {ack, _, _} = Ack} ->
             {NewState, Ack};
         {NewState, {nack, _, _} = Nack} ->
@@ -301,7 +289,7 @@ get_ack(State) ->
     end.
 
 get_packet(State) ->
-    get_packet(State, <<>>, 10000).
+    get_packet(State, <<>>, 100).
 
 get_packet(State, _, 0) ->
     {State, {error, timeout}};
@@ -366,13 +354,13 @@ parse(?NAV, ?PVT, <<ITOW:?U4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, S
                     Heading:?I4, SpeedAccuracy:?U4, HeadingAccuracy:?U4, PositionDOP:?U2, _:6/binary,
                     VehicleHeading:?I4, MagneticDeclination:?I2, MagneticAccuracy:?U2>>) ->
     %io:format("ITOW ~p, Year ~p, Month ~p, Day ~p, Hour ~p, Minute ~p, Second ~p~n",
-              %[ITOW, Year, Month, Day, Hour, Min, Sec]),
+    %[ITOW, Year, Month, Day, Hour, Min, Sec]),
     %io:format("Valid ~p, TimeAccuracy ~p, Nano ~p, FixTime ~p, Flags ~p, Flags2 ~p~n",
-              %[Valid, TimeAccuracy, Nano, FixType, Flags, Flags2]),
+    %[Valid, TimeAccuracy, Nano, FixType, Flags, Flags2]),
     %io:format("NumSatellites ~p, Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft~n",
-              %[NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
+    %[NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
     %io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n",
-              %[VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
+    %[VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
     {nav_pvt, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy, TimeAccuracy}};
 %% UBX-NAV-POSLLH
 parse(?NAV, ?POSLLH, <<ITOW:?U4, Longitude:?I4, Latitude:?I4, Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4, VerticalAccuracy:?U4>>) ->
@@ -427,7 +415,7 @@ parse_extensions(<<Ext:30/binary, Tail/binary>>, Acc) ->
     Extension = hd(binary:split(Ext, <<0>>)),
     parse_extensions(Tail, [Extension|Acc]).
 %parse_extensions(Other) ->
-    %io:format("Other extensions data ~p~n", [Other]).
+%io:format("Other extensions data ~p~n", [Other]).
 
 parse_satellites(<<>>) -> ok;
 parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, PrRes:?I2, Flags:?X4, Tail/binary>>) ->
@@ -451,6 +439,7 @@ resolve(nav_sol) -> {?NAV, ?SOL};
 resolve(nav_sat) -> {?NAV, ?SAT};
 resolve(nav_posllh) -> {?NAV, ?POSLLH};
 resolve(mon_ver) -> {?MON, ?VER};
+resolve(mon_hw) -> {?MON, ?HW};
 resolve(cfg_port) -> {?CFG, ?PRT};
 resolve(cfg_tp5) -> {?CFG, ?TP5};
 resolve(tim_tm2) -> {?TIM, ?TM2}.
@@ -460,6 +449,7 @@ resolve(?NAV, ?SOL) -> nav_sol;
 resolve(?NAV, ?SAT) -> nav_sat;
 resolve(?NAV, ?POSLLH) -> nav_posllh;
 resolve(?MON, ?VER) -> mon_ver;
+resolve(?MON, ?HW) -> mon_hw;
 resolve(?CFG, ?PRT) -> cfg_port;
 resolve(?CFG, ?TP5) -> cfg_tp5;
 resolve(?TIM, ?TM2) -> tim_tm2.
