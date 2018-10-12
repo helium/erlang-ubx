@@ -76,10 +76,10 @@ poll_message(Msg, Payload, Pid) ->
 
 init([spi, Filename, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
-    {ok, Gpio68} = gpio:start_link(68, input),
-    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio68},
-    gpio:register_int(Gpio68),
-    gpio:set_int(Gpio68, rising),
+    {ok, Gpio} = gpio:start_link(69, input),
+    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio},
+    gpio:register_int(Gpio),
+    gpio:set_int(Gpio, rising),
     %% disable LNA_EN pin function so we can repurpose it as TX_READY
     send(State0, frame(?CFG, ?ANT, <<0, 0, 16#f0, 16#39>>)),
     {State, {ack, ?CFG, ?ANT}} = get_ack(State0),
@@ -100,7 +100,6 @@ init([spi, Filename, Options, ControllingProcess]) ->
     Flags = 0,
     Reserved3 = <<0, 0>>,
     send(State, frame(?CFG, ?PRT, <<Port:?U1, Reserved1/binary, TXReady/binary, Mode:?X4, Reserved2/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, Reserved3/binary>>)),
-    %self() ! {gpio_interrupt,68,rising},
     {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
     TPIdx = 0,
     Version = 1,
@@ -128,9 +127,9 @@ init([spi, Filename, Options, ControllingProcess]) ->
     %% PIO changes don't take effect until a config save
     send(NewState2, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
     {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
-    case gpio:read(Gpio68) of
+    case gpio:read(Gpio) of
         1 ->
-            self() ! {gpio_interrupt,68,rising};
+            self() ! {gpio_interrupt,69,rising};
         0 ->
             ok
     end,
@@ -150,10 +149,12 @@ init([serial, Filename, Options, ControllingProcess]) ->
     {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
     {ok, NewState}.
 
-handle_info({gpio_interrupt,68,rising}, State = #state{ack=Ack, poll=Poll}) ->
-    Result = case get_packet(State) of
-        {NewState, {error, _}} ->
-                        {stop, NewState};
+handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
+    io:format("handling interrupt~n"),
+    {ok, NewerState} = case get_packet(State) of
+        {NewState, {error, Error}} ->
+                               io:format("error ~p~n", [Error]),
+                        {ok, NewState};
         {NewState, {ack, ?CFG, ?MSG}} ->
                         io:format("ack~n"),
             case Ack of
@@ -186,13 +187,12 @@ handle_info({gpio_interrupt,68,rising}, State = #state{ack=Ack, poll=Poll}) ->
                     {ok, NewState}
             end
     end,
-    %% check if there's more than one packet waiting?
-    case Result of
-        {ok, NewerState} ->
-            %io:format("more data~n"),
-            handle_info({gpio_interrupt, 68, rising}, NewerState);
-            %{noreply, NewerState};
-        {stop, NewerState} ->
+    case gpio:read(NewerState#state.gpio) of
+        1 ->
+            io:format("interrupt still high~n"),
+            handle_info({gpio_interrupt, 69, rising}, NewerState);
+        0 ->
+            io:format("interrupt went low~n"),
             {noreply, NewerState}
     end;
 handle_info({data, Bytes}, State) ->
@@ -289,7 +289,7 @@ get_ack(State) ->
     end.
 
 get_packet(State) ->
-    get_packet(State, <<>>, 100).
+    get_packet(State, <<>>, 6).
 
 get_packet(State, _, 0) ->
     {State, {error, timeout}};
