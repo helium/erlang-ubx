@@ -17,7 +17,7 @@ init_per_suite(Config) ->
     application:ensure_all_started(lager),
     lager:set_loglevel(lager_console_backend, debug),
 
-    {ok, B} = ebus:start(),
+    {ok, B} = ebus:starter(),
     ?assertEqual(ok, ebus:request_name(B, "com.helium.test",
                                        [{replace_existing, true}])),
     [{bus, B}| Config].
@@ -39,7 +39,7 @@ message_test(Config) ->
     B = ?config(bus, Config),
     Obj = ?config(ubx_object, Config),
 
-    {ok, Proxy} = ebus_proxy:start(B, "com.helium.test", "/com/helium/GPS", []),
+    {ok, Proxy} = ebus_proxy:start(B, "com.helium.test", "/com/helium/GPS"),
 
     ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, "Position")),
 
