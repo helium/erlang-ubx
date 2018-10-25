@@ -323,7 +323,7 @@ get_packet(State, Acc, Count) ->
                                                 recv(NewState, Length + 2)
                                         end,
                     {NewState2, parse(<<Header/binary, Body/binary>>)};
-                Other ->
+                _Other ->
                     %{NewState, {error, {goop, Other}}}
                     get_packet(NewState, <<>>, Count - 1)
             end
@@ -347,10 +347,10 @@ parse(16#5, 16#0, <<ClassID:?U1, MsgID:?U1>>) ->
     {nack, ClassID, MsgID};
 
 %% UBX-NAV-PVT
-parse(?NAV, ?PVT, <<ITOW:?U4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, Sec:?U1,
-                    Valid:?X1, TimeAccuracy:?U4, Nano:?I4, FixType:?U1, Flags:?X1, Flags2:?X1,
-                    NumSV:?U1, Longitude:?I4, Latitude:?I4, Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
-                    VerticalAccuracy:?U4, VelocityN:?I4, VelocityE:?I4, VelocityD:?I4, Speed:?I4,
+parse(?NAV, ?PVT, <<_ITOW:?U4, _Year:?U2, _Month:?U1, _Day:?U1, _Hour:?U1, _Min:?U1, _Sec:?U1,
+                    _Valid:?X1, TimeAccuracy:?U4, _Nano:?I4, _FixType:?U1, _Flags:?X1, _Flags2:?X1,
+                    _NumSV:?U1, Longitude:?I4, Latitude:?I4, _Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
+                    VerticalAccuracy:?U4, _VelocityN:?I4, _VelocityE:?I4, _VelocityD:?I4, _Speed:?I4,
                     _Heading:?I4, _SpeedAccuracy:?U4, _HeadingAccuracy:?U4, _PositionDOP:?U2, _:6/binary,
                     _VehicleHeading:?I4, _MagneticDeclination:?I2, _MagneticAccuracy:?U2>>) ->
     %io:format("ITOW ~p, Year ~p, Month ~p, Day ~p, Hour ~p, Minute ~p, Second ~p~n",
@@ -394,12 +394,12 @@ parse(?NAV, ?SAT, <<_ITOW:?U4, _Version:?U1, NumSatellites:?U1, _Reserved:2/bina
     io:format("Satellites in view ~p~n", [NumSatellites]),
     parse_satellites(Tail),
     {nav_sat, lol};
-parse(?CFG, ?PRT, <<4:?U1, Reserved1:?U1, TXReady:?X2, Mode:?X4, Reserved2:4/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, Reserved3:2/binary>>) ->
+parse(?CFG, ?PRT, <<4:?U1, _Reserved1:?U1, TXReady:?X2, Mode:?X4, _Reserved2:4/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, _Reserved3:2/binary>>) ->
     io:format("SPI port configuration TXReady ~p Mode ~p  InProtoMask ~p OutProtoMask ~p Flags ~p~n", [TXReady, Mode, InProtoMask, OutProtoMask, Flags]),
     <<Count:9/integer-unsigned-big, PIO:5/integer-unsigned-big, POL:1/integer, EN:1/integer>> = <<TXReady:16/integer-big>>,
     io:format("TX Ready enabled: ~p Polarity ~p PIO ~p Count ~p~n", [EN, POL, PIO, Count]),
     {cfg_port, lol};
-parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved:2/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>) ->
+parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, _Reserved:2/binary, _AntennaCableDelay:?I2, _RFGroupDelay:?I2, FreqPeriod:?U4, _FreqPeriodLock:?U4, PulseLenRatio:?U4, _PulseLenRatioLock:?U4, _UserConfigDelay:?I4, TPFlags:?X4>>) ->
     io:format("Time pulse ~p, version ~p frequency ~p pulse length ~p~n", [TPIdx, Version, FreqPeriod, PulseLenRatio]),
 
     <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>> = <<TPFlags:32/integer-unsigned-big>>,
