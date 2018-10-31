@@ -150,7 +150,7 @@ init([serial, Filename, Options, ControllingProcess]) ->
     {ok, NewState}.
 
 handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
-    io:format("handling interrupt~n"),
+    %io:format("handling interrupt~n"),
     {ok, NewerState} = case get_packet(State) of
         {NewState, {error, Error}} ->
                                io:format("error ~p~n", [Error]),
@@ -176,7 +176,7 @@ handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
                     {ok, NewState}
             end;
         {NewState, Packet = {Msg, _}} ->
-                        io:format("packet~n"),
+                        %io:format("packet~n"),
             case Poll of
                 {Msg, From, Ref} ->
                     erlang:cancel_timer(Ref),
@@ -189,10 +189,10 @@ handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
     end,
     case gpio:read(NewerState#state.gpio) of
         1 ->
-            io:format("interrupt still high~n"),
+            %io:format("interrupt still high~n"),
             handle_info({gpio_interrupt, 69, rising}, NewerState);
         0 ->
-            io:format("interrupt went low~n"),
+            %io:format("interrupt went low~n"),
             {noreply, NewerState}
     end;
 handle_info({data, Bytes}, State) ->
