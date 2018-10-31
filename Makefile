@@ -8,6 +8,6 @@ compile:
 clean:
 	$(REBAR) clean
 
-rebar:
+release:
 	$(REBAR) release -d false
 
