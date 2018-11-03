@@ -36,7 +36,7 @@ handle_message("Position", _Msg, State=#state{}) ->
      [bool, {dict, string, double}],
      [State#state.gps_lock, State#state.gps_position], State};
 handle_message(Member, _Msg, State) ->
-    lager:warning("Unhandled message~p", Member),
+    lager:warning("Unhandled message ~p", Member),
     {noreply, State}.
 
 handle_info({nav_sol, GPSFix}, State) ->

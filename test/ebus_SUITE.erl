@@ -9,7 +9,7 @@
 
 all() ->
     % cannot restart ubx_ebus for multiple tests
-    [ % msg_test,
+    [ % message_test,
       signal_test
     ].
 
@@ -40,20 +40,22 @@ end_per_testcase(_, Config) ->
 message_test(Config) ->
     B = ?config(bus, Config),
     Obj = ?config(ubx_object, Config),
+    Path = "/com/helium/GPS",
+    Member = "Position",
 
-    {ok, Proxy} = ebus_proxy:start(B, "com.helium.GPS", "/com/helium/GPS"),
+    {ok, Proxy} = ebus_proxy:start(B, "com.helium.GPS", Path),
 
-    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, "/com/helium/GPS", "Position")),
+    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, Path, Member)),
 
     %% Invalid gps fix leaves lock as false
     Obj ! {nav_sol, 1},
-    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, "/com/helium/GPS", "Position")),
+    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, Path, Member)),
     %% Receiving a ubx reading while not gps locked does not update Position
     Obj ! {nav_posllh,{0,0,0,0,0}},
-    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, "/com/helium/GPS", "Position")),
+    ?assertEqual({ok, [false, #{}]}, ebus_proxy:call(Proxy, Path, Member)),
     %% Provide a gps fix and position to the service
     Obj ! {nav_sol, 3},
-    ?assertEqual({ok, [true, #{}]}, ebus_proxy:call(Proxy, "/com/helium/GPS", "Position")),
+    ?assertEqual({ok, [true, #{}]}, ebus_proxy:call(Proxy, Path, Member)),
     Obj ! {nav_posllh,{37.7705072,-122.4191044,40989,21974,3074}},
     %% Note that integer values are converted to doubles in the map
     Pos = #{
@@ -63,7 +65,7 @@ message_test(Config) ->
             "h_accuracy" => 21974.0,
             "v_accuracy" => 3074.0
            },
-    ?assertEqual({ok, [true, Pos]}, ebus_proxy:call(Proxy, "/com/helium/GPS", "Position")),
+    ?assertEqual({ok, [true, Pos]}, ebus_proxy:call(Proxy, Path, Member)),
 
     ok.
 
