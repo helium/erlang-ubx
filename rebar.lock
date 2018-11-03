@@ -1,7 +1,7 @@
 {"1.1.0",
 [{<<"ebus">>,
   {git,"https://github.com/helium/ebus",
-       {ref,"eb1682ff5e43ff44bab4b9c1c102e3b9d5708a0d"}},
+       {ref,"016be945878bc25b9e4b1bf2c07727685612e85d"}},
   0},
  {<<"erlang_ale">>,
   {git,"https://github.com/helium/erlang_ale",
