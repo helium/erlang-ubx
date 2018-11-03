@@ -8,8 +8,8 @@
 -export([message_test/1, signal_test/1]).
 
 all() ->
-    % cannot restart ubx_ebus for multiple tests
-    [ % message_test,
+    % FIXME: cannot restart ubx_ebus object for multiple tests
+    [ %message_test,
       signal_test
     ].
 
