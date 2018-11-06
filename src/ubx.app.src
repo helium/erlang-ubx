@@ -1,5 +1,5 @@
 {application, ubx,
- [{description, "An OTP library for interacting with UBlox GPS receivers using the UBX protocol"},
+ [{description, "An OTP library for interacting with u-blox GPS receivers using the UBX protocol"},
   {vsn, "0.1.0"},
   {registered, []},
   {applications,
@@ -10,10 +10,10 @@
     lager,
     ebus
    ]},
-  {env,[]},
-  {modules, []},
+  {env, []},
+  {mod, {ubx_app, []}},
 
-  {maintainers, []},
   {licenses, ["Apache 2.0"]},
-  {links, []}
+  {maintainers, ["Helium"]},
+  {links, [{"GitHub", "https://github.com/helium/erlang-ubx"}]}
  ]}.
