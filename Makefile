@@ -12,5 +12,4 @@ test:
 	$(REBAR) ct
 
 release:
-	$(REBAR) release -d false
-
+	$(REBAR) as default release -d false
