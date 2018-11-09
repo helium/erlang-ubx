@@ -6,7 +6,7 @@
 -define(OBJECT_INTERFACE, "com.helium.GPS").
 
 %% ebus_object
--export([start/4, start_link/4, init/1, handle_info/2, handle_message/3]).
+-export([start/5, start_link/5, init/1, handle_info/2, handle_message/3]).
 
 -record(state, {
                 ubx_handle :: pid(),
@@ -14,20 +14,20 @@
                 gps_position=#{} :: #{string() => float()}
                }).
 
-start(Bus, Type, Device, Options) ->
-    ebus_object:start(Bus, ?OBJECT_PATH, ?MODULE, [Type, Device, Options], []).
+start(Bus, Type, Device, Gpio, Options) ->
+    ebus_object:start(Bus, ?OBJECT_PATH, ?MODULE, [Type, Device, Gpio, Options], []).
 
-start_link(Bus, Type, Device, Options) ->
-    ebus_object:start_link(Bus, ?OBJECT_PATH, ?MODULE, [Type, Device, Options], []).
+start_link(Bus, Type, Device, Gpio, Options) ->
+    ebus_object:start_link(Bus, ?OBJECT_PATH, ?MODULE, [Type, Device, Gpio, Options], []).
 
 -ifndef(TEST).
-init([Type, Device, Options]) ->
-    {ok, Pid} = ubx:start_link(Type, Device, Options, self()),
+init([Type, Device, Gpio, Options]) ->
+    {ok, Pid} = ubx:start_link(Type, Device, Gpio, Options, self()),
     ubx:enable_message(nav_posllh, 5, Pid),
     ubx:enable_message(nav_sol, 5, Pid),
     {ok, #state{ubx_handle=Pid}}.
 -else.
-init([_Type, _Device, _Options]) ->
+init([_Type, _Device, _Gpio, _Options]) ->
     {ok, #state{ubx_handle=test}}.
 -endif.
 
