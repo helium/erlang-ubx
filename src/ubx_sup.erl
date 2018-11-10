@@ -9,9 +9,9 @@ start_link([Bus]) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, [Bus]).
 
 init([Bus]) ->
-    {ok, Type} = application:get_env(ubx_app, devicetype),
-    {ok, Filename} = application:get_env(ubx_app, filename),
-    {ok, Gpio} = application:get_env(ubx_app, gpio),
+    {ok, Type} = application:get_env(ubx, devicetype),
+    {ok, Filename} = application:get_env(ubx, filename),
+    {ok, Gpio} = application:get_env(ubx, gpio),
 
     SupFlags = #{strategy => one_for_all,
                  intensity => 1,
