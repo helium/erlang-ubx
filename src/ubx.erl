@@ -47,15 +47,19 @@
           controlling_process :: pid(),
           ack,
           poll,
-          gpio
+          gpio,
+          gpionum
          }).
 
--export([start_link/4, enable_message/3, disable_message/2, poll_message/2, poll_message/3, parse/1]).
+-export([start_link/5, enable_message/3, disable_message/2, poll_message/2, poll_message/3, parse/1]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
-start_link(Type, Filename, Options, ControllingProcess) ->
-    gen_server:start_link(?MODULE, [Type, Filename, Options, ControllingProcess], []).
+start_link(spi, Filename, GpioNum, Options, ControllingProcess) ->
+    gen_server:start_link(?MODULE, [spi, Filename, GpioNum, Options, ControllingProcess], []);
+
+start_link(serial, Filename, _GpioNum, Options, ControllingProcess) ->
+    gen_server:start_link(?MODULE, [serial, Filename, Options, ControllingProcess], []).
 
 enable_message(Msg, Frequency, Pid) ->
     {MsgClass, MsgID} = resolve(Msg),
@@ -74,10 +78,10 @@ poll_message(Msg, Payload, Pid) ->
     gen_server:call(Pid, {poll_message, MsgClass, MsgID, Payload}).
 
 
-init([spi, Filename, Options, ControllingProcess]) ->
+init([spi, Filename, GpioNum, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
-    {ok, Gpio} = gpio:start_link(69, input),
-    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio},
+    {ok, Gpio} = gpio:start_link(GpioNum, input),
+    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio, gpionum=GpioNum},
     gpio:register_int(Gpio),
     gpio:set_int(Gpio, rising),
     %% disable LNA_EN pin function so we can repurpose it as TX_READY
@@ -129,7 +133,7 @@ init([spi, Filename, Options, ControllingProcess]) ->
     {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
     case gpio:read(Gpio) of
         1 ->
-            self() ! {gpio_interrupt,69,rising};
+            self() ! {gpio_interrupt,GpioNum,rising};
         0 ->
             ok
     end,
@@ -149,7 +153,7 @@ init([serial, Filename, Options, ControllingProcess]) ->
     {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
     {ok, NewState}.
 
-handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
+handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, gpionum=GpioNum}) ->
     %io:format("handling interrupt~n"),
     {ok, NewerState} = case get_packet(State) of
         {NewState, {error, Error}} ->
@@ -190,7 +194,7 @@ handle_info({gpio_interrupt,69,rising}, State = #state{ack=Ack, poll=Poll}) ->
     case gpio:read(NewerState#state.gpio) of
         1 ->
             %io:format("interrupt still high~n"),
-            handle_info({gpio_interrupt, 69, rising}, NewerState);
+            handle_info({gpio_interrupt, GpioNum, rising}, NewerState);
         0 ->
             %io:format("interrupt went low~n"),
             {noreply, NewerState}

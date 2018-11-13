@@ -13,4 +13,3 @@ test:
 
 release:
 	$(REBAR) release -d false
-

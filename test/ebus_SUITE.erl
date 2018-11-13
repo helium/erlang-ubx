@@ -30,7 +30,7 @@ end_per_suite(Config) ->
 
 init_per_testcase(_, Config) ->
     B = ?config(bus, Config),
-    {ok, Obj} = ubx_ebus:start(B, type, device, options),
+    {ok, Obj} = ubx_ebus:start(B, type, device, gpio, options),
     [{ubx_object, Obj} | Config].
 
 end_per_testcase(_, Config) ->
