@@ -5,13 +5,9 @@
   {applications,
    [kernel,
     stdlib,
-    serial,
-    erlang_ale,
-    lager,
-    ebus
+    erlang_ale
    ]},
   {env, []},
-  {mod, {ubx_app, []}},
 
   {licenses, ["Apache 2.0"]},
   {maintainers, ["Helium"]},

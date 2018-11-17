@@ -42,7 +42,6 @@
 
 -record(state, {
           device :: port() | pid(),
-          devicetype :: spi | serial,
           buffer = <<>> :: binary(),
           controlling_process :: pid(),
           ack,
@@ -51,37 +50,37 @@
           gpionum
          }).
 
--export([start_link/5, enable_message/3, disable_message/2, poll_message/2, poll_message/3, parse/1]).
+-export([start_link/4, enable_message/3, disable_message/2, stop/2,
+         poll_message/2, poll_message/3, parse/1]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
-start_link(spi, Filename, GpioNum, Options, ControllingProcess) ->
-    gen_server:start_link(?MODULE, [spi, Filename, GpioNum, Options, ControllingProcess], []);
+start_link(Filename, GpioNum, Options, ControllingProcess) ->
+    gen_server:start_link(?MODULE, [Filename, GpioNum, Options, ControllingProcess], []).
 
-start_link(serial, Filename, _GpioNum, Options, ControllingProcess) ->
-    gen_server:start_link(?MODULE, [serial, Filename, Options, ControllingProcess], []).
-
-enable_message(Msg, Frequency, Pid) ->
+enable_message(Pid, Msg, Frequency) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {enable_message, MsgClass, MsgID, Frequency}).
 
-disable_message(Msg, Pid) ->
+disable_message(Pid,Msg) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {enable_message, MsgClass, MsgID, 0}).
 
-poll_message(Msg, Pid) ->
+poll_message(Pid, Msg) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {poll_message, MsgClass, MsgID, <<>>}).
 
-poll_message(Msg, Payload, Pid) ->
+poll_message(Pid, Msg, Payload) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {poll_message, MsgClass, MsgID, Payload}).
 
+stop(Pid, Reason) ->
+    gen_server:stop(Pid, Reason, infinity).
 
-init([spi, Filename, GpioNum, Options, ControllingProcess]) ->
+init([Filename, GpioNum, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
     {ok, Gpio} = gpio:start_link(GpioNum, input),
-    State0 = #state{device=Spi, devicetype=spi, controlling_process=ControllingProcess, gpio=Gpio, gpionum=GpioNum},
+    State0 = #state{device=Spi, controlling_process=ControllingProcess, gpio=Gpio, gpionum=GpioNum},
     gpio:register_int(Gpio),
     gpio:set_int(Gpio, rising),
     %% disable LNA_EN pin function so we can repurpose it as TX_READY
@@ -137,21 +136,7 @@ init([spi, Filename, GpioNum, Options, ControllingProcess]) ->
         0 ->
             ok
     end,
-    {ok, NewState3};
-
-init([serial, Filename, Options, ControllingProcess]) ->
-    SerialPort = serial:start([{open, Filename} | Options]),
-    State = #state{device=SerialPort, devicetype=serial, controlling_process=ControllingProcess},
-    TXReady = 0,
-    Port=3,
-    Reserved2 = <<0, 0, 0, 0, 0, 0, 0, 0>>,
-    InProtoMask = 1, %% only UBX
-    OutProtoMask = 1, %% only UBX
-    Reserved3 = <<0, 0>>,
-    Reserved4 = <<0, 0>>,
-    send(State, frame(?CFG, ?PRT, <<Port:?U1, 0:?U1, TXReady:?X2, Reserved2/binary, InProtoMask:?X2, OutProtoMask:?X2, Reserved3/binary, Reserved4/binary>>)),
-    {NewState, {ack, ?CFG, ?PRT}} = get_ack(State),
-    {ok, NewState}.
+    {ok, NewState3}.
 
 handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, gpionum=GpioNum}) ->
     %io:format("handling interrupt~n"),
@@ -241,38 +226,13 @@ handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
-send(#state{devicetype=spi, device=Device}, Packet) ->
+send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
-    spi:transfer(Device, Packet);
-send(#state{devicetype=serial, device=Device}, Packet) ->
-    Device ! {send, Packet}.
+    spi:transfer(Device, Packet).
 
-recv(State=#state{devicetype=spi, device=Device}, Length) ->
+recv(State=#state{device=Device}, Length) ->
     %io:format("SPI read ~p~n", [Length]),
-    {State, spi:transfer(Device, binary:copy(<<255>>, Length))};
-recv(State=#state{devicetype=serial, buffer=Buffer}, Length) ->
-    case byte_size(Buffer) < Length of
-        true ->
-            receive
-                {data, Bytes} ->
-                    case byte_size(Bytes) + byte_size(Buffer) >= Length of
-                        true ->
-                            <<Result:Length/binary, NewBuffer/binary>> = <<Buffer/binary, Bytes/binary>>,
-                            {State#state{buffer=NewBuffer}, Result};
-                        false ->
-                            recv(State#state{buffer = <<Buffer/binary, Bytes/binary>>}, Length)
-                    end
-            after
-                5000 ->
-                    {State, {error, timeout}}
-            end;
-        false ->
-            <<Result:Length/binary, NewBuffer/binary>> = Buffer,
-            {State#state{buffer=NewBuffer}, Result}
-    end.
-
-is_spi(#state{devicetype=spi}) -> true;
-is_spi(_) -> false.
+    {State, spi:transfer(Device, binary:copy(<<255>>, Length))}.
 
 frame(Class, Id, Payload) ->
     {CKA, CKB} = checksum(<<Class, Id, (byte_size(Payload)):?U2, Payload/binary>>),
@@ -318,7 +278,7 @@ get_packet(State, Acc, Count) ->
                 <<_:8/integer, ?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>> ->
                     get_packet(NewState, <<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>>, Count - 1);
                 <<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2>> = Header ->
-                    {NewState2, Body} = case is_spi(State) andalso Length + 2 > 255 of
+                    {NewState2, Body} = case Length + 2 > 255 of
                                             true ->
                                                 {_, B1} = recv(NewState, 128),
                                                 {_, B2} = recv(NewState, (Length + 2) rem 128),
