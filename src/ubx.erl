@@ -112,7 +112,7 @@ init([Filename, GpioNum, Options, ControllingProcess]) ->
     FreqPeriod = 1, %% 1mHz
     PulseLenRatio = 0, %% disable the pulse when not locked
     FreqPeriodLock = 8000000, %% 4mHz
-    PulseLenRatioLock = 2147483648, %% 50% duty cycle when locked
+    PulseLenRatioLock = 0, % disabled for now 2147483648, %% 50% duty cycle when locked
     UserConfigDelay = 0,
     TPActive = 1,
     LockGNSSFreq = 1,
