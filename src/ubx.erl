@@ -445,14 +445,40 @@ parse_extensions(<<Ext:30/binary, Tail/binary>>, Acc) ->
 
 parse_satellites(<<>>, Acc) ->
     lists:reverse(Acc);
-parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _PrRes:?I2, _Flags:?X4, Tail/binary>>, Acc) ->
+parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _PrRes:?I2, Flags:?X4, Tail/binary>>, Acc) ->
+
+    <<0:9/integer, _DoCorrUsed:1/integer, _CrCorrUsed:1/integer, _PrCorrUsed:1/integer,
+      _:1/integer, _SLASCorrUsed:1/integer, _RTCMCorrUsed:1/integer, _SBASCorrUsed:1/integer,
+      _:1/integer, _AOPAvail:1/integer, _ANOAvail:1/integer, _AlmanacAvail:1/integer,
+      _EphemerisAvail:1/integer, _OrbitSource:3/integer-unsigned-big, _Smoothed:1/integer,
+      _DiffCorr:1/integer, Health:2/integer-unsigned-big, SVUsed:1/integer,
+      Quality:3/integer-unsigned-big>> = <<Flags:32/integer-unsigned-big>>,
     Info = #{
-             id => GNSSId,
-             sv_id => SvId,
+             type => sat_id(GNSSId),
+             id => SvId,
              cno => CNO,
+             health => Health,
+             quality => Quality,
+             used => SVUsed == 1,
              elevation => Elevation,
              azimuth => Azimuth},
     parse_satellites(Tail, [Info | Acc]).
+
+sat_id(0) ->
+    gps;
+sat_id(1) ->
+    sbas;
+sat_id(2) ->
+    galileo;
+sat_id(3) ->
+    beidou;
+sat_id(4) ->
+    imes;
+sat_id(5) ->
+    qzss;
+sat_id(6) ->
+    glonass.
+
 
 checksum(Binary) ->
     checksum(Binary, 0, 0).
