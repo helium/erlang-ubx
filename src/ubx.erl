@@ -114,6 +114,8 @@ init([Filename, GpioNum, Options, ControllingProcess]) ->
     State0 = #state{device=Spi, controlling_process=ControllingProcess, gpio=Gpio, gpionum=GpioNum},
     gpio:register_int(Gpio),
     gpio:set_int(Gpio, rising),
+    %% flush any buffered data
+    flush_tx_buf(State0),
     %% disable LNA_EN pin function so we can repurpose it as TX_READY
     send(State0, frame(?CFG, ?ANT, <<0, 0, 16#f0, 16#39>>)),
     {State, {ack, ?CFG, ?ANT}} = get_ack(State0),
@@ -261,9 +263,29 @@ send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
 
-recv(State=#state{device=Device}, Length) ->
+recv(State=#state{device=Device}, Length) when Length =< 128 ->
     %io:format("SPI read ~p~n", [Length]),
-    {State, spi:transfer(Device, binary:copy(<<255>>, Length))}.
+    {State, spi:transfer(Device, binary:copy(<<255>>, Length))};
+recv(State, Length) ->
+    %% length over 128
+    recv_loop(State, Length, []).
+
+recv_loop(State, Length, Acc) when Length =< 128 ->
+    {NewState, Bin} = recv(State, Length),
+    {NewState, list_to_binary(lists:reverse([Bin|Acc]))};
+recv_loop(State, Length, Acc) ->
+    {NewState, Bin} = recv(State, 128),
+    recv_loop(NewState, Length - 128, [Bin|Acc]).
+
+flush_tx_buf(State) ->
+    {NewState, Bin} = recv(State, 128),
+    %% wait until only 255s come back
+    case binary:copy(<<255>>, 128) == Bin of
+        true ->
+            NewState;
+        false ->
+            flush_tx_buf(NewState)
+    end.
 
 frame(Class, Id, Payload) ->
     {CKA, CKB} = checksum(<<Class, Id, (byte_size(Payload)):?U2, Payload/binary>>),
@@ -309,14 +331,7 @@ get_packet(State, Acc, Count) ->
                 <<_:8/integer, ?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>> ->
                     get_packet(NewState, <<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>>, Count - 1);
                 <<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2>> = Header ->
-                    {NewState2, Body} = case Length + 2 > 255 of
-                                            true ->
-                                                {_, B1} = recv(NewState, 128),
-                                                {_, B2} = recv(NewState, (Length + 2) rem 128),
-                                                {NewState, <<B1/binary, B2/binary>>};
-                                            false ->
-                                                recv(NewState, Length + 2)
-                                        end,
+                    {NewState2, Body} = recv(NewState, Length + 2),
                     {NewState2, parse(<<Header/binary, Body/binary>>)};
                 _Other ->
                     %{NewState, {error, {goop, Other}}}
@@ -331,7 +346,10 @@ parse(<<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, Length:?U2, Body:Length/binary, C
             parse(Class, ID, Body);
         _ ->
             {error, bad_checksum}
-    end.
+    end;
+parse(<<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, Length:?U2, Tail/binary>>) ->
+    io:format("Got packet ~p  with declared length ~p but actual length ~p~n", [catch(resolve(Class, ID)), Length, byte_size(Tail) - 2]),
+    {error, bad_length}.
 
 %% UBX-ACK-ACK
 parse(16#5, 16#1, <<ClassID:?U1, MsgID:?U1>>) ->
