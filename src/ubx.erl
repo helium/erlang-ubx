@@ -40,6 +40,37 @@
 -define(TP5, 16#31).
 -define(ANT, 16#13).
 
+
+-type fix_type() :: non_neg_integer(). %% gps fix type
+-type nav_sol() :: fix_type().
+-type nav_pvt() :: #{
+                     fix_type => fix_type(),
+                     num_sats => pos_integer(), %% number of visible sats
+                     lat => float(), %% latitude in degrees
+                     lon => float(), %% longitude in degrees
+                     height_msl => integer(), %% height mean sea level in MM
+                     height => integer(), %% height in MM
+                     h_acc => non_neg_integer(), %% in MM
+                     v_acc => non_neg_integer(), %% in MM
+                     t_acc => non_neg_integer()
+                    }.
+-type nav_sat() :: #{
+                     id => non_neg_integer(), %% GNSS Id
+                     sv_id => non_neg_integer(),
+                     cno => non_neg_integer(),
+                     elevation => integer(),
+                     azimuth => integer()
+                    }.
+-type nav_posllh() :: #{
+                        lat => float(), %% latitude in degrees
+                        lon => float(), %% longitude in degrees
+                        h_acc => non_neg_integer(), %% in MM
+                        v_acc => non_neg_integer() %% in MM
+                       }.
+
+-export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, fix_type/0]).
+
+
 -record(state, {
           device :: port() | pid(),
           buffer = <<>> :: binary(),
@@ -313,7 +344,7 @@ parse(16#5, 16#0, <<ClassID:?U1, MsgID:?U1>>) ->
 %% UBX-NAV-PVT
 parse(?NAV, ?PVT, <<_ITOW:?U4, _Year:?U2, _Month:?U1, _Day:?U1, _Hour:?U1, _Min:?U1, _Sec:?U1,
                     _Valid:?X1, TimeAccuracy:?U4, _Nano:?I4, FixType:?U1, _Flags:?X1, _Flags2:?X1,
-                    NumSV:?U1, Longitude:?I4, Latitude:?I4, _Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
+                    NumSV:?U1, Longitude:?I4, Latitude:?I4, Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
                     VerticalAccuracy:?U4, _VelocityN:?I4, _VelocityE:?I4, _VelocityD:?I4, _Speed:?I4,
                     _Heading:?I4, _SpeedAccuracy:?U4, _HeadingAccuracy:?U4, _PositionDOP:?U2, _:6/binary,
                     _VehicleHeading:?I4, _MagneticDeclination:?I2, _MagneticAccuracy:?U2>>) ->
@@ -331,6 +362,7 @@ parse(?NAV, ?PVT, <<_ITOW:?U4, _Year:?U2, _Month:?U1, _Day:?U1, _Hour:?U1, _Min:
                 lat => Latitude * 1.0e-7,
                 lon => Longitude * 1.0e-7,
                 height_msl => HeightMSL,
+                height => Height,
                 h_acc => HorizontalAccuracy,
                 v_acc => VerticalAccuracy,
                 t_acc => TimeAccuracy
