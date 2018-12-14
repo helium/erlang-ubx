@@ -40,6 +40,37 @@
 -define(TP5, 16#31).
 -define(ANT, 16#13).
 
+
+-type fix_type() :: non_neg_integer(). %% gps fix type
+-type nav_sol() :: fix_type().
+-type nav_pvt() :: #{
+                     fix_type => fix_type(),
+                     num_sats => pos_integer(), %% number of visible sats
+                     lat => float(), %% latitude in degrees
+                     lon => float(), %% longitude in degrees
+                     height_msl => integer(), %% height mean sea level in MM
+                     height => integer(), %% height in MM
+                     h_acc => non_neg_integer(), %% in MM
+                     v_acc => non_neg_integer(), %% in MM
+                     t_acc => non_neg_integer()
+                    }.
+-type nav_sat() :: #{
+                     id => non_neg_integer(), %% GNSS Id
+                     sv_id => non_neg_integer(),
+                     cno => non_neg_integer(),
+                     elevation => integer(),
+                     azimuth => integer()
+                    }.
+-type nav_posllh() :: #{
+                        lat => float(), %% latitude in degrees
+                        lon => float(), %% longitude in degrees
+                        h_acc => non_neg_integer(), %% in MM
+                        v_acc => non_neg_integer() %% in MM
+                       }.
+
+-export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, fix_type/0]).
+
+
 -record(state, {
           device :: port() | pid(),
           buffer = <<>> :: binary(),
@@ -50,7 +81,7 @@
           gpionum
          }).
 
--export([start_link/4, enable_message/3, disable_message/2, stop/2,
+-export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
          poll_message/2, poll_message/3, parse/1]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
@@ -83,6 +114,8 @@ init([Filename, GpioNum, Options, ControllingProcess]) ->
     State0 = #state{device=Spi, controlling_process=ControllingProcess, gpio=Gpio, gpionum=GpioNum},
     gpio:register_int(Gpio),
     gpio:set_int(Gpio, rising),
+    %% flush any buffered data
+    flush_tx_buf(State0),
     %% disable LNA_EN pin function so we can repurpose it as TX_READY
     send(State0, frame(?CFG, ?ANT, <<0, 0, 16#f0, 16#39>>)),
     {State, {ack, ?CFG, ?ANT}} = get_ack(State0),
@@ -230,9 +263,29 @@ send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
 
-recv(State=#state{device=Device}, Length) ->
+recv(State=#state{device=Device}, Length) when Length =< 128 ->
     %io:format("SPI read ~p~n", [Length]),
-    {State, spi:transfer(Device, binary:copy(<<255>>, Length))}.
+    {State, spi:transfer(Device, binary:copy(<<255>>, Length))};
+recv(State, Length) ->
+    %% length over 128
+    recv_loop(State, Length, []).
+
+recv_loop(State, Length, Acc) when Length =< 128 ->
+    {NewState, Bin} = recv(State, Length),
+    {NewState, list_to_binary(lists:reverse([Bin|Acc]))};
+recv_loop(State, Length, Acc) ->
+    {NewState, Bin} = recv(State, 128),
+    recv_loop(NewState, Length - 128, [Bin|Acc]).
+
+flush_tx_buf(State) ->
+    {NewState, Bin} = recv(State, 128),
+    %% wait until only 255s come back
+    case binary:copy(<<255>>, 128) == Bin of
+        true ->
+            NewState;
+        false ->
+            flush_tx_buf(NewState)
+    end.
 
 frame(Class, Id, Payload) ->
     {CKA, CKB} = checksum(<<Class, Id, (byte_size(Payload)):?U2, Payload/binary>>),
@@ -278,14 +331,7 @@ get_packet(State, Acc, Count) ->
                 <<_:8/integer, ?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>> ->
                     get_packet(NewState, <<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, L1>>, Count - 1);
                 <<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2>> = Header ->
-                    {NewState2, Body} = case Length + 2 > 255 of
-                                            true ->
-                                                {_, B1} = recv(NewState, 128),
-                                                {_, B2} = recv(NewState, (Length + 2) rem 128),
-                                                {NewState, <<B1/binary, B2/binary>>};
-                                            false ->
-                                                recv(NewState, Length + 2)
-                                        end,
+                    {NewState2, Body} = recv(NewState, Length + 2),
                     {NewState2, parse(<<Header/binary, Body/binary>>)};
                 _Other ->
                     %{NewState, {error, {goop, Other}}}
@@ -300,7 +346,10 @@ parse(<<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, Length:?U2, Body:Length/binary, C
             parse(Class, ID, Body);
         _ ->
             {error, bad_checksum}
-    end.
+    end;
+parse(<<?HEADER1, ?HEADER2, Class:?U1, ID:?U1, Length:?U2, Tail/binary>>) ->
+    io:format("Got packet ~p  with declared length ~p but actual length ~p~n", [catch(resolve(Class, ID)), Length, byte_size(Tail) - 2]),
+    {error, bad_length}.
 
 %% UBX-ACK-ACK
 parse(16#5, 16#1, <<ClassID:?U1, MsgID:?U1>>) ->
@@ -312,8 +361,8 @@ parse(16#5, 16#0, <<ClassID:?U1, MsgID:?U1>>) ->
 
 %% UBX-NAV-PVT
 parse(?NAV, ?PVT, <<_ITOW:?U4, _Year:?U2, _Month:?U1, _Day:?U1, _Hour:?U1, _Min:?U1, _Sec:?U1,
-                    _Valid:?X1, TimeAccuracy:?U4, _Nano:?I4, _FixType:?U1, _Flags:?X1, _Flags2:?X1,
-                    _NumSV:?U1, Longitude:?I4, Latitude:?I4, _Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
+                    _Valid:?X1, TimeAccuracy:?U4, _Nano:?I4, FixType:?U1, _Flags:?X1, _Flags2:?X1,
+                    NumSV:?U1, Longitude:?I4, Latitude:?I4, Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4,
                     VerticalAccuracy:?U4, _VelocityN:?I4, _VelocityE:?I4, _VelocityD:?I4, _Speed:?I4,
                     _Heading:?I4, _SpeedAccuracy:?U4, _HeadingAccuracy:?U4, _PositionDOP:?U2, _:6/binary,
                     _VehicleHeading:?I4, _MagneticDeclination:?I2, _MagneticAccuracy:?U2>>) ->
@@ -325,12 +374,27 @@ parse(?NAV, ?PVT, <<_ITOW:?U4, _Year:?U2, _Month:?U1, _Day:?U1, _Hour:?U1, _Min:
     %[NumSV, Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET]),
     %io:format("Vertical Accuracy ~f ft, Velocity North ~f mph, Velocity East ~f mph, Velocity Down ~f mph, Ground Speed ~f mph~n",
     %[VerticalAccuracy * ?MM_TO_FEET, VelocityN * ?MM_TO_MILES, VelocityE * ?MM_TO_MILES, VelocityD * ?MM_TO_MILES, Speed * ?MM_TO_MILES]),
-    {nav_pvt, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy, TimeAccuracy}};
+    {nav_pvt, #{
+                fix_type => FixType,
+                num_sats => NumSV,
+                lat => Latitude * 1.0e-7,
+                lon => Longitude * 1.0e-7,
+                height_msl => HeightMSL,
+                height => Height,
+                h_acc => HorizontalAccuracy,
+                v_acc => VerticalAccuracy,
+                t_acc => TimeAccuracy
+               }};
 %% UBX-NAV-POSLLH
-parse(?NAV, ?POSLLH, <<_ITOW:?U4, Longitude:?I4, Latitude:?I4, _Height:?I4, HeightMSL:?I4, HorizontalAccuracy:?U4, VerticalAccuracy:?U4>>) ->
+parse(?NAV, ?POSLLH, <<_ITOW:?U4, Longitude:?I4, Latitude:?I4, _Height:?I4, _HeightMSL:?I4, HorizontalAccuracy:?U4, VerticalAccuracy:?U4>>) ->
     %io:format("Longitude ~f, Latitude ~f, Height Ellipsoid ~p ft, Height MeanSeaLevel ~f ft, Horizontal Accuracy ~f ft, Vertical Accuracy ~f~n",
     %[Longitude * 1.0e-7, Latitude * 1.0e-7, Height * ?MM_TO_FEET, HeightMSL * ?MM_TO_FEET, HorizontalAccuracy * ?MM_TO_FEET, VerticalAccuracy * ?MM_TO_FEET]),
-    {nav_posllh, {Latitude * 1.0e-7, Longitude * 1.0e-7, HeightMSL, HorizontalAccuracy, VerticalAccuracy}};
+    {nav_posllh, #{
+                   lat => Latitude * 1.0e-7,
+                   lon => Longitude * 1.0e-7,
+                   h_acc => HorizontalAccuracy,
+                   v_acc => VerticalAccuracy
+                  }};
 parse(?NAV, ?SOL, <<_ITOW:?U4, _FTOW:?I4, _Week:?I2, GPSFix:?U1, _/binary>>) ->
     %io:format("SOL ~p~n", [GPSFix]),
     {nav_sol, GPSFix};
@@ -354,10 +418,8 @@ parse(?MON, ?HW, <<PinSel:?X4, PinBank:?X4, PinDir:?X4, PinVal:?X4, NoisePerMS:?
     io:format("Hardware Status: PinSel ~p, PinBank ~p, PinDir ~p, PinVal ~p, NoisePerMS ~p ACGCount ~p AntennaStatus ~p AntennaPower ~p~n", [PinSel, PinBank, PinDir, PinVal, NoisePerMS, AGCCnt, AStatus, APower]),
     io:format("                 used mask ~p, Pin mapping ~w~n", [UsedMask, VP]),
     {mon_hw, lol};
-parse(?NAV, ?SAT, <<_ITOW:?U4, _Version:?U1, NumSatellites:?U1, _Reserved:2/binary, Tail/binary>>) ->
-    io:format("Satellites in view ~p~n", [NumSatellites]),
-    parse_satellites(Tail),
-    {nav_sat, lol};
+parse(?NAV, ?SAT, <<_ITOW:?U4, _Version:?U1, _NumSatellites:?U1, _Reserved:2/binary, Tail/binary>>) ->
+    {nav_sat, parse_satellites(Tail, [])};
 parse(?CFG, ?PRT, <<4:?U1, _Reserved1:?U1, TXReady:?X2, Mode:?X4, _Reserved2:4/binary, InProtoMask:?X2, OutProtoMask:?X2, Flags:?X2, _Reserved3:2/binary>>) ->
     io:format("SPI port configuration TXReady ~p Mode ~p  InProtoMask ~p OutProtoMask ~p Flags ~p~n", [TXReady, Mode, InProtoMask, OutProtoMask, Flags]),
     <<Count:9/integer-unsigned-big, PIO:5/integer-unsigned-big, POL:1/integer, EN:1/integer>> = <<TXReady:16/integer-big>>,
@@ -381,10 +443,42 @@ parse_extensions(<<Ext:30/binary, Tail/binary>>, Acc) ->
 %parse_extensions(Other) ->
 %io:format("Other extensions data ~p~n", [Other]).
 
-parse_satellites(<<>>) -> ok;
-parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _PrRes:?I2, _Flags:?X4, Tail/binary>>) ->
-    io:format("    Satellite ID ~p ~p with C/No ~p, Elevation ~p, Azimuth ~p~n", [GNSSId, SvId, CNO, Elevation, Azimuth]),
-    parse_satellites(Tail).
+parse_satellites(<<>>, Acc) ->
+    lists:reverse(Acc);
+parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _PrRes:?I2, Flags:?X4, Tail/binary>>, Acc) ->
+
+    <<0:9/integer, _DoCorrUsed:1/integer, _CrCorrUsed:1/integer, _PrCorrUsed:1/integer,
+      _:1/integer, _SLASCorrUsed:1/integer, _RTCMCorrUsed:1/integer, _SBASCorrUsed:1/integer,
+      _:1/integer, _AOPAvail:1/integer, _ANOAvail:1/integer, _AlmanacAvail:1/integer,
+      _EphemerisAvail:1/integer, _OrbitSource:3/integer-unsigned-big, _Smoothed:1/integer,
+      _DiffCorr:1/integer, Health:2/integer-unsigned-big, SVUsed:1/integer,
+      Quality:3/integer-unsigned-big>> = <<Flags:32/integer-unsigned-big>>,
+    Info = #{
+             type => sat_id(GNSSId),
+             id => SvId,
+             cno => CNO,
+             health => Health,
+             quality => Quality,
+             used => SVUsed == 1,
+             elevation => Elevation,
+             azimuth => Azimuth},
+    parse_satellites(Tail, [Info | Acc]).
+
+sat_id(0) ->
+    gps;
+sat_id(1) ->
+    sbas;
+sat_id(2) ->
+    galileo;
+sat_id(3) ->
+    beidou;
+sat_id(4) ->
+    imes;
+sat_id(5) ->
+    qzss;
+sat_id(6) ->
+    glonass.
+
 
 checksum(Binary) ->
     checksum(Binary, 0, 0).
@@ -425,3 +519,13 @@ register_ack(From, State) ->
 register_poll(Msg, From, State) ->
     Ref = erlang:send_after(5000, self(), poll_timeout),
     State#state{poll={Msg, From, Ref}}.
+
+fix_type(Byte) ->
+    case Byte of
+        0 -> no_fix;
+        1 -> dead_reckoning;
+        2 -> fix_2d;
+        3 -> fix_3d;
+        4 -> gnss_and_dead_reckoning;
+        5 -> time_only
+    end.
