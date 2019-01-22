@@ -39,6 +39,7 @@
 -define(CFG2, 16#09).
 -define(TP5, 16#31).
 -define(ANT, 16#13).
+-define(TIMEUTC, 16#21).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -67,8 +68,17 @@
                         h_acc => non_neg_integer(), %% in MM
                         v_acc => non_neg_integer() %% in MM
                        }.
+-type nav_timeutc() :: #{
+                         year => non_neg_integer(),
+                         month => non_neg_integer(),
+                         day => non_neg_integer(),
+                         hour => non_neg_integer(),
+                         min => non_neg_integer(),
+                         sec => non_neg_integer(),
+                         nano => integer() %% fraction of sec, range -1e9 .. 1e9
+                        }.
 
--export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, fix_type/0]).
+-export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, nav_timeutc/0, fix_type/0]).
 
 
 -record(state, {
@@ -398,6 +408,20 @@ parse(?NAV, ?POSLLH, <<_ITOW:?U4, Longitude:?I4, Latitude:?I4, _Height:?I4, _Hei
 parse(?NAV, ?SOL, <<_ITOW:?U4, _FTOW:?I4, _Week:?I2, GPSFix:?U1, _/binary>>) ->
     %io:format("SOL ~p~n", [GPSFix]),
     {nav_sol, GPSFix};
+%% UBX-NAV-TIMEUTC
+parse(?NAV, ?TIMEUTC, <<_ITOW:?U4, _TAcc:?U4, Nano:?I4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, Sec:?U1, Valid:?X1>>) ->
+    io:format("Time UTC: Year ~p Month ~p Day ~p Hour ~p Min ~p Sec ~p Nano ~p~n", [Year, Month, Day, Hour, Min, Sec, Nano]),
+    <<UTCStandard:4/integer-unsigned-big, _:1/integer, ValidUTC:1/integer, ValidWKN:1/integer, ValidTOW:1/integer>> = <<Valid:8/integer-big>>,
+    io:format("          UTCStandard ~p ValidUTC ~p ValidWKN ~p ValidTOW ~p~n", [UTCStandard, ValidUTC, ValidWKN, ValidTOW]),
+    {nav_timeutc, #{
+                    year => Year,
+                    month => Month,
+                    day => Day,
+                    hour => Hour,
+                    min => Min,
+                    sec => Sec,
+                    nano => Nano
+                   }};
 %% UBX-MON-VER
 parse(?MON, ?VER, <<SWVersion:30/binary, HWVersion:10/binary, Tail/binary>>) ->
     SW = hd(binary:split(SWVersion, <<0>>)),
@@ -496,6 +520,7 @@ resolve(nav_pvt) -> {?NAV, ?PVT};
 resolve(nav_sol) -> {?NAV, ?SOL};
 resolve(nav_sat) -> {?NAV, ?SAT};
 resolve(nav_posllh) -> {?NAV, ?POSLLH};
+resolve(nav_timeutc) -> {?NAV, ?TIMEUTC};
 resolve(mon_ver) -> {?MON, ?VER};
 resolve(mon_hw) -> {?MON, ?HW};
 resolve(cfg_port) -> {?CFG, ?PRT};
@@ -506,6 +531,7 @@ resolve(?NAV, ?PVT) -> nav_pvt;
 resolve(?NAV, ?SOL) -> nav_sol;
 resolve(?NAV, ?SAT) -> nav_sat;
 resolve(?NAV, ?POSLLH) -> nav_posllh;
+resolve(?NAV, ?TIMEUTC) -> nav_timeutc;
 resolve(?MON, ?VER) -> mon_ver;
 resolve(?MON, ?HW) -> mon_hw;
 resolve(?CFG, ?PRT) -> cfg_port;
