@@ -69,13 +69,13 @@
                         v_acc => non_neg_integer() %% in MM
                        }.
 -type nav_timeutc() :: #{
-                         year => non_neg_integer(),
-                         month => non_neg_integer(),
-                         day => non_neg_integer(),
-                         hour => non_neg_integer(),
-                         min => non_neg_integer(),
-                         sec => non_neg_integer(),
-                         nano => integer() %% fraction of sec, range -1e9 .. 1e9
+                         datetime => calendar:datetime(),
+                         t_acc => non_neg_integer(), %% time accuracy estimate in ns
+                         nano => integer(), %% fraction of sec, range -1e9 .. 1e9,
+                         utc_std => non_neg_integer(), %% UTC standard identifier
+                         valid_utc => non_neg_integer(), %% 1 = Valid UTC Time
+                         valid_wkn => non_neg_integer(), %% 1 = Valid Week Number
+                         valid_tow => non_neg_integer()  %% 1 = Valid Time of Week
                         }.
 
 -export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, nav_timeutc/0, fix_type/0]).
@@ -409,18 +409,18 @@ parse(?NAV, ?SOL, <<_ITOW:?U4, _FTOW:?I4, _Week:?I2, GPSFix:?U1, _/binary>>) ->
     %io:format("SOL ~p~n", [GPSFix]),
     {nav_sol, GPSFix};
 %% UBX-NAV-TIMEUTC
-parse(?NAV, ?TIMEUTC, <<_ITOW:?U4, _TAcc:?U4, Nano:?I4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, Sec:?U1, Valid:?X1>>) ->
-    io:format("Time UTC: Year ~p Month ~p Day ~p Hour ~p Min ~p Sec ~p Nano ~p~n", [Year, Month, Day, Hour, Min, Sec, Nano]),
-    <<UTCStandard:4/integer-unsigned-big, _:1/integer, ValidUTC:1/integer, ValidWKN:1/integer, ValidTOW:1/integer>> = <<Valid:8/integer-big>>,
+parse(?NAV, ?TIMEUTC, <<_ITOW:?U4, TAcc:?U4, Nano:?I4, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Min:?U1, Sec:?U1, Valid:?X1>>) ->
+    io:format("Time UTC: Year ~p Month ~p Day ~p Hour ~p Min ~p Sec ~p TAcc ~p Nano ~p~n", [Year, Month, Day, Hour, Min, Sec, TAcc, Nano]),
+    <<UTCStandard:4/integer-unsigned-big, _:1/integer-unsigned, ValidUTC:1/integer-unsigned, ValidWKN:1/integer-unsigned, ValidTOW:1/integer-unsigned>> = <<Valid:8/integer-big>>,
     io:format("          UTCStandard ~p ValidUTC ~p ValidWKN ~p ValidTOW ~p~n", [UTCStandard, ValidUTC, ValidWKN, ValidTOW]),
     {nav_timeutc, #{
-                    year => Year,
-                    month => Month,
-                    day => Day,
-                    hour => Hour,
-                    min => Min,
-                    sec => Sec,
-                    nano => Nano
+                    datetime => {{Year, Month, Day}, {Hour, Min, Sec}},
+                    t_acc => TAcc,
+                    nano => Nano,
+                    utc_std => UTCStandard,
+                    valid_utc => ValidUTC,
+                    valid_wkn => ValidWKN,
+                    valid_tow => ValidTOW
                    }};
 %% UBX-MON-VER
 parse(?MON, ?VER, <<SWVersion:30/binary, HWVersion:10/binary, Tail/binary>>) ->
