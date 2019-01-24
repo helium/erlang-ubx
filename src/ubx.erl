@@ -271,7 +271,7 @@ handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
             send(State, frame(MsgClass, MsgID, Payload)),
             {noreply, register_poll(Msg, From, State)};
         _ ->
-            {noreply, {error, busy}, State}
+            {reply, {error, busy}, State}
     end;
 
 handle_call({send_message, ?MGA_INI, ?TIME_UTC, DateTime}, _From, State) ->
@@ -282,17 +282,18 @@ handle_call({send_message, ?MGA_INI, ?TIME_UTC, DateTime}, _From, State) ->
             Source = 0, %% 0: none, i.e. on receipt of message (will be inaccurate!)
             Fall = 0, %% use falling edge of EXTINT pulse (default rising) - only if source is EXTINT
             Last = 0, %% use last EXTINT pulse (default next pulse) - only if source is EXTINT
-            Ref = <<Source:4/integer-unsigned-big, Fall:1/integer, Last:1/integer>>,
+            Ref = << 0:1/integer, 0:1/integer, Last:1/integer, Fall:1/integer, Source:4/integer-unsigned-big>>,
             LeapSecs = -128, %% number of leap seconds since 1980 (-128 if unknown)
             Reserved1 = <<0>>,
             Nanosecs = 0,
             TAccS = 0, %% seconds part of time accuracy
             Reserved2 = <<0, 0>>,
             TAccNs = 500000000, %% nanoseconds part of time accuracy
-            send(State, frame(?MGA_INI, ?TIME_UTC, <<Type:?U1, Version:?U1, Ref:?X1, LeapSecs:?I1, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Minute:?U1, Second:?U1, Reserved1/binary, Nanosecs:?U4, TAccS:?U2, Reserved2/binary, TAccNs:?U4>>)),
-            {noreply, State};
+            Packet = <<Type:?U1, Version:?U1, Ref/binary, LeapSecs:?I1, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Minute:?U1, Second:?U1, Reserved1/binary, Nanosecs:?U4, TAccS:?U2, Reserved2/binary, TAccNs:?U4>>,
+            send(State, frame(?MGA_INI, ?TIME_UTC, Packet)),
+            {reply, ok, State};
         _ ->
-            {noreply, {error, invalid_datetime}, State}
+            {reply, {error, invalid_datetime}, State}
     end;
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
