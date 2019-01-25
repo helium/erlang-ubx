@@ -24,6 +24,7 @@
 -define(CFG, 16#06).
 -define(TIM, 16#0d).
 -define(NAV, 16#01).
+-define(MGA_INI, 16#13).
 
 %% message IDs
 -define(TM2, 16#03).
@@ -40,6 +41,7 @@
 -define(TP5, 16#31).
 -define(ANT, 16#13).
 -define(TIMEUTC, 16#21).
+-define(TIME_UTC, 16#40).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -92,7 +94,7 @@
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
-         poll_message/2, poll_message/3, parse/1]).
+         poll_message/2, poll_message/3, set_time_utc/2, parse/1]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -103,7 +105,7 @@ enable_message(Pid, Msg, Frequency) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {enable_message, MsgClass, MsgID, Frequency}).
 
-disable_message(Pid,Msg) ->
+disable_message(Pid, Msg) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {enable_message, MsgClass, MsgID, 0}).
 
@@ -114,6 +116,9 @@ poll_message(Pid, Msg) ->
 poll_message(Pid, Msg, Payload) ->
     {MsgClass, MsgID} = resolve(Msg),
     gen_server:call(Pid, {poll_message, MsgClass, MsgID, Payload}).
+
+set_time_utc(Pid, DateTime) ->
+    gen_server:call(Pid, {set_time_utc, DateTime}).
 
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
@@ -264,7 +269,29 @@ handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
             send(State, frame(MsgClass, MsgID, Payload)),
             {noreply, register_poll(Msg, From, State)};
         _ ->
-            {noreply, {error, busy}, State}
+            {reply, {error, busy}, State}
+    end;
+
+handle_call({set_time_utc, DateTime}, _From, State) ->
+    case DateTime of
+        {{Year, Month, Day}, {Hour, Minute, Second}} ->
+            Type = 16#10,
+            Version = 16#00,
+            Source = 0, %% 0: none, i.e. on receipt of message (will be inaccurate!)
+            Fall = 0, %% use falling edge of EXTINT pulse (default rising) - only if source is EXTINT
+            Last = 0, %% use last EXTINT pulse (default next pulse) - only if source is EXTINT
+            Ref = << 0:1/integer, 0:1/integer, Last:1/integer, Fall:1/integer, Source:4/integer-unsigned-big>>,
+            LeapSecs = -128, %% number of leap seconds since 1980 (-128 if unknown)
+            Reserved1 = <<0>>,
+            Nanosecs = 0,
+            TAccS = 0, %% seconds part of time accuracy
+            Reserved2 = <<0, 0>>,
+            TAccNs = 500000000, %% nanoseconds part of time accuracy
+            Packet = <<Type:?U1, Version:?U1, Ref/binary, LeapSecs:?I1, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Minute:?U1, Second:?U1, Reserved1/binary, Nanosecs:?U4, TAccS:?U2, Reserved2/binary, TAccNs:?U4>>,
+            send(State, frame(?MGA_INI, ?TIME_UTC, Packet)),
+            {reply, ok, State};
+        _ ->
+            {reply, {error, invalid_datetime}, State}
     end;
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
