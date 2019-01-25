@@ -118,9 +118,7 @@ poll_message(Pid, Msg, Payload) ->
     gen_server:call(Pid, {poll_message, MsgClass, MsgID, Payload}).
 
 set_time_utc(Pid, DateTime) ->
-    MsgClass = ?MGA_INI,
-    MsgID = ?TIME_UTC,
-    gen_server:call(Pid, {send_message, MsgClass, MsgID, DateTime}).
+    gen_server:call(Pid, {set_time_utc, DateTime}).
 
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
@@ -274,7 +272,7 @@ handle_call({poll_message, MsgClass, MsgID, Payload}, From, State) ->
             {reply, {error, busy}, State}
     end;
 
-handle_call({send_message, ?MGA_INI, ?TIME_UTC, DateTime}, _From, State) ->
+handle_call({set_time_utc, DateTime}, _From, State) ->
     case DateTime of
         {{Year, Month, Day}, {Hour, Minute, Second}} ->
             Type = 16#10,
