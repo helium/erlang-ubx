@@ -42,6 +42,8 @@
 -define(ANT, 16#13).
 -define(TIMEUTC, 16#21).
 -define(TIME_UTC, 16#40).
+-define(ANO, 16#20).
+-define(NAV5, 16#24).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -82,7 +84,6 @@
 
 -export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, nav_timeutc/0, fix_type/0]).
 
-
 -record(state, {
           device :: port() | pid(),
           buffer = <<>> :: binary(),
@@ -94,7 +95,7 @@
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
-         poll_message/2, poll_message/3, set_time_utc/2, parse/1]).
+         poll_message/2, poll_message/3, set_time_utc/2, parse/1, upload_offline_assistance/2]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -122,6 +123,9 @@ set_time_utc(Pid, DateTime) ->
 
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
+
+upload_offline_assistance(Pid, File) ->
+    gen_server:call(Pid, {upload_offline_assistance, File}, infinity).
 
 init([Filename, GpioNum, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
@@ -192,7 +196,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
         {NewState, {error, Error}} ->
                                io:format("error ~p~n", [Error]),
                         {ok, NewState};
-        {NewState, {ack, ?CFG, ?MSG}} ->
+        {NewState, {ack, ?CFG, _}} ->
                         io:format("ack~n"),
             case Ack of
                 {From, Ref} ->
@@ -202,7 +206,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
                 undefined ->
                     {ok, NewState}
             end;
-        {NewState, {nack, ?CFG, ?MSG}} ->
+        {NewState, {nack, ?CFG, _}} ->
                         io:format("nack~n"),
             case Ack of
                 {From, Ref} ->
@@ -293,12 +297,26 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
         _ ->
             {reply, {error, invalid_datetime}, State}
     end;
+handle_call({upload_offline_assistance, Filename}, _From, State) ->
+    {ok, Bin} = file:read_file(Filename),
+    {{Year, Month, Day}, _} = calendar:universal_time(),
+    Res = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
+    %io:format("Matching messages ~p~n", [Res]),
+    send(State, Res),
+    {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
+send(_, <<>>) ->
+    ok;
+send(S=#state{device=Device}, <<Packet:128/binary, Tail/binary>>) ->
+    %io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    spi:transfer(Device, Packet),
+    send(S, Tail);
 send(#state{device=Device}, Packet) ->
-    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    %io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
+
 
 recv(State=#state{device=Device}, Length) when Length =< 128 ->
     %io:format("SPI read ~p~n", [Length]),
@@ -482,6 +500,10 @@ parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, _Reserved:2/binary, _AntennaCableDel
     <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>> = <<TPFlags:32/integer-unsigned-big>>,
     io:format("SyncMode ~p, Grid ~p Polarity ~p AlignToW ~p IsLength ~p IsFreq ~p, LockedOtherSet ~p LockGNSS, ~p TPActive ~p~n", [SyncMode, GridUTCGNSS, ClockPolarity, AlignToToW, IsLength, IsFreq, LockedOtherSet, LockGNSSFreq, TPActive]),
     {cfg_tp5, lol};
+parse(?CFG, ?NAV5, <<Mask:?X2, DynModel:?U1, FixMode:?U1, _Tail/binary>>) ->
+    io:format("Mask ~w~n", [Mask]),
+    io:format("Dynamic platform model ~p, Fix mode ~p~n", [DynModel, FixMode]),
+    {cfg_nav5, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
@@ -552,6 +574,8 @@ resolve(mon_ver) -> {?MON, ?VER};
 resolve(mon_hw) -> {?MON, ?HW};
 resolve(cfg_port) -> {?CFG, ?PRT};
 resolve(cfg_tp5) -> {?CFG, ?TP5};
+resolve(cfg_nav5) -> {?CFG, ?NAV5};
+resolve(cfg_cfg) -> {?CFG, ?CFG2};
 resolve(tim_tm2) -> {?TIM, ?TM2}.
 
 resolve(?NAV, ?PVT) -> nav_pvt;
@@ -563,6 +587,8 @@ resolve(?MON, ?VER) -> mon_ver;
 resolve(?MON, ?HW) -> mon_hw;
 resolve(?CFG, ?PRT) -> cfg_port;
 resolve(?CFG, ?TP5) -> cfg_tp5;
+resolve(?CFG, ?NAV5) -> cfg_nav5;
+resolve(?CFG, ?CFG2) -> cfg_cfg;
 resolve(?TIM, ?TM2) -> tim_tm2.
 
 register_ack(From, State) ->
@@ -581,4 +607,22 @@ fix_type(Byte) ->
         3 -> fix_3d;
         4 -> gnss_and_dead_reckoning;
         5 -> time_only
+    end.
+
+find_matching_assistance_messages(<<>>, _, _, _, Acc) ->
+    list_to_binary(lists:reverse(Acc));
+find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Year, Month, Day, Acc) ->
+    case checksum(<<?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body/binary>>) of
+        {CK_A, CK_B} ->
+            %% checksum is OK
+            case Body of
+                <<0:?U1, 0:?U1, _SVId:?U1, _GNSSId:?U1, Year:?U1, Month:?U1, Day:?U1, _/binary>> ->
+                    %% got a match
+                    find_matching_assistance_messages(Tail, Year, Month, Day,
+                                                      [<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+                _ ->
+                    find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
+            end;
+        _Other ->
+            find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
     end.
