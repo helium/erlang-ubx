@@ -300,9 +300,9 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
 handle_call({upload_offline_assistance, Filename}, _From, State) ->
     {ok, Bin} = file:read_file(Filename),
     {{Year, Month, Day}, _} = calendar:universal_time(),
-    Res = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
+    Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
     %io:format("Matching messages ~p~n", [Res]),
-    send(State, Res),
+    [send(State, Msg) || Msg <- Msgs],
     {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
@@ -310,11 +310,11 @@ handle_call(Msg, _From, State) ->
 send(_, <<>>) ->
     ok;
 send(S=#state{device=Device}, <<Packet:128/binary, Tail/binary>>) ->
-    %io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet),
     send(S, Tail);
 send(#state{device=Device}, Packet) ->
-    %io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
 
 
@@ -610,7 +610,7 @@ fix_type(Byte) ->
     end.
 
 find_matching_assistance_messages(<<>>, _, _, _, Acc) ->
-    list_to_binary(lists:reverse(Acc));
+    lists:reverse(Acc);
 find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Year, Month, Day, Acc) ->
     case checksum(<<?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body/binary>>) of
         {CK_A, CK_B} ->
