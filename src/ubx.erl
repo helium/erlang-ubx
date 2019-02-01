@@ -94,7 +94,7 @@
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
-         poll_message/2, poll_message/3, set_time_utc/2, parse/1]).
+         poll_message/2, poll_message/3, set_time_utc/2, parse/1, upload_online_assistance/2]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -119,6 +119,9 @@ poll_message(Pid, Msg, Payload) ->
 
 set_time_utc(Pid, DateTime) ->
     gen_server:call(Pid, {set_time_utc, DateTime}).
+
+upload_online_assistance(Pid, File) ->
+    gen_server:call(Pid, {upload_online_assistance, File}, infinity).
 
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
@@ -293,6 +296,10 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
         _ ->
             {reply, {error, invalid_datetime}, State}
     end;
+handle_call({upload_online_assistance, Filename}, _From, State) ->
+    {ok, Bin} = file:read_file(Filename),
+    send(State, Bin),
+    {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
