@@ -195,7 +195,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
         {NewState, {error, Error}} ->
                                io:format("error ~p~n", [Error]),
                         {ok, NewState};
-        {NewState, {ack, ?CFG, ?MSG}} ->
+        {NewState, {ack, ?CFG, _}} ->
                         io:format("ack~n"),
             case Ack of
                 {From, Ref} ->
@@ -205,7 +205,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
                 undefined ->
                     {ok, NewState}
             end;
-        {NewState, {nack, ?CFG, ?MSG}} ->
+        {NewState, {nack, ?CFG, _}} ->
                         io:format("nack~n"),
             case Ack of
                 {From, Ref} ->
@@ -303,6 +303,12 @@ handle_call({upload_online_assistance, Filename}, _From, State) ->
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
+send(_, <<>>) ->
+    ok;
+send(S=#state{device=Device}, <<Packet:128/binary, Tail/binary>>) ->
+    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    spi:transfer(Device, Packet),
+    send(S, Tail);
 send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
