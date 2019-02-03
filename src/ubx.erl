@@ -298,7 +298,8 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
     end;
 handle_call({upload_online_assistance, Filename}, _From, State) ->
     {ok, Bin} = file:read_file(Filename),
-    send(State, Bin),
+    Msgs = bin_to_messages(Bin, []),
+    [send(State, Msg) || Msg <- Msgs],
     {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
@@ -514,7 +515,7 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
     <<0:9/integer, _DoCorrUsed:1/integer, _CrCorrUsed:1/integer, _PrCorrUsed:1/integer,
       _:1/integer, _SLASCorrUsed:1/integer, _RTCMCorrUsed:1/integer, _SBASCorrUsed:1/integer,
       _:1/integer, _AOPAvail:1/integer, _ANOAvail:1/integer, _AlmanacAvail:1/integer,
-      _EphemerisAvail:1/integer, _OrbitSource:3/integer-unsigned-big, _Smoothed:1/integer,
+      _EphemerisAvail:1/integer, OrbitSource:1/integer, _Reserved:2/integer-unsigned-big, _Smoothed:1/integer,
       _DiffCorr:1/integer, Health:2/integer-unsigned-big, SVUsed:1/integer,
       Quality:3/integer-unsigned-big>> = <<Flags:32/integer-unsigned-big>>,
     Info = #{
@@ -525,7 +526,8 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
              quality => Quality,
              used => SVUsed == 1,
              elevation => Elevation,
-             azimuth => Azimuth},
+             azimuth => Azimuth,
+             orbit => OrbitSource},
     parse_satellites(Tail, [Info | Acc]).
 
 sat_id(0) ->
@@ -594,4 +596,16 @@ fix_type(Byte) ->
         3 -> fix_3d;
         4 -> gnss_and_dead_reckoning;
         5 -> time_only
+    end.
+
+bin_to_messages(<<>>, Acc) ->
+    lists:reverse(Acc);
+bin_to_messages(<<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
+    case checksum(<<_ID:?U1, _Class:?U1, Length:?U2, Body/binary>>) of
+        {CK_A, CK_B} ->
+            %% checksum is OK
+            bin_to_messages(Tail,
+                [<<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+        _Other ->
+            bin_to_messages(Tail, Acc)
     end.
