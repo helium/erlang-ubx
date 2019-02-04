@@ -599,13 +599,16 @@ fix_type(Byte) ->
     end.
 
 bin_to_messages(<<>>, Acc) ->
+    io:format("end of messages"),
     lists:reverse(Acc);
 bin_to_messages(<<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
     case checksum(<<_ID:?U1, _Class:?U1, Length:?U2, Body/binary>>) of
         {CK_A, CK_B} ->
             %% checksum is OK
+            io:format("checksum: ~p", [CK_A]),
             bin_to_messages(Tail,
                 [<<?HEADER1, ?HEADER2, _Class:?U1, _ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
         _Other ->
+            io:format("dropping message length: ~p", [Length]),
             bin_to_messages(Tail, Acc)
     end.
