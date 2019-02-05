@@ -95,7 +95,8 @@
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
-         poll_message/2, poll_message/3, set_time_utc/2, parse/1, upload_offline_assistance/2]).
+         poll_message/2, poll_message/3, set_time_utc/2, parse/1,
+         upload_offline_assistance/2, upload_online_assistance/2]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -120,6 +121,9 @@ poll_message(Pid, Msg, Payload) ->
 
 set_time_utc(Pid, DateTime) ->
     gen_server:call(Pid, {set_time_utc, DateTime}).
+
+upload_online_assistance(Pid, File) ->
+    gen_server:call(Pid, {upload_online_assistance, File}, infinity).
 
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
@@ -302,6 +306,11 @@ handle_call({upload_offline_assistance, Filename}, _From, State) ->
     {{Year, Month, Day}, _} = calendar:universal_time(),
     Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
     %io:format("Matching messages ~p~n", [Res]),
+    [send(State, Msg) || Msg <- Msgs],
+    {reply, ok, State};
+handle_call({upload_online_assistance, Filename}, _From, State) ->
+    {ok, Bin} = file:read_file(Filename),
+    Msgs = bin_to_messages(Bin, []),
     [send(State, Msg) || Msg <- Msgs],
     {reply, ok, State};
 handle_call(Msg, _From, State) ->
@@ -523,7 +532,7 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
     <<0:9/integer, _DoCorrUsed:1/integer, _CrCorrUsed:1/integer, _PrCorrUsed:1/integer,
       _:1/integer, _SLASCorrUsed:1/integer, _RTCMCorrUsed:1/integer, _SBASCorrUsed:1/integer,
       _:1/integer, _AOPAvail:1/integer, _ANOAvail:1/integer, _AlmanacAvail:1/integer,
-      _EphemerisAvail:1/integer, _OrbitSource:3/integer-unsigned-big, _Smoothed:1/integer,
+      _EphemerisAvail:1/integer, OrbitSource:1/integer, _Reserved:2/integer-unsigned-big, _Smoothed:1/integer,
       _DiffCorr:1/integer, Health:2/integer-unsigned-big, SVUsed:1/integer,
       Quality:3/integer-unsigned-big>> = <<Flags:32/integer-unsigned-big>>,
     Info = #{
@@ -534,7 +543,8 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
              quality => Quality,
              used => SVUsed == 1,
              elevation => Elevation,
-             azimuth => Azimuth},
+             azimuth => Azimuth,
+             orbit => OrbitSource},
     parse_satellites(Tail, [Info | Acc]).
 
 sat_id(0) ->
@@ -626,3 +636,17 @@ find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, 
         _Other ->
             find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
     end.
+
+bin_to_messages(<<>>, Acc) ->
+    lists:reverse(Acc);
+bin_to_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
+    case checksum(<<?MGA_INI:?U1, ID:?U1, Length:?U2, Body/binary>>) of
+        {CK_A, CK_B} ->
+            %% checksum is OK
+            bin_to_messages(Tail,
+                [<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+        _ ->
+            io:format("dropping message length: ~p", [Length]),
+            bin_to_messages(Tail, Acc)
+    end.
+
