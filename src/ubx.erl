@@ -184,16 +184,19 @@ init([Filename, GpioNum, Options, ControllingProcess]) ->
     send(NewState, frame(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>)),
 
     {NewState2, {ack, ?CFG, ?TP5}} = get_ack(State),
+    %% Enable flow control
+    send(NewState2, frame(?CFG, ?NAVX5, <<2:?U2, (1 bsl 10):?X2, 0:?X4, 0:(9*8)/integer, 1:?U1, 0:(22*8)/integer>>)),
+    {NewState3, {ack, ?CFG, ?NAVX5}} = get_ack(NewState2),
     %% PIO changes don't take effect until a config save
-    send(NewState2, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
-    {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
+    send(NewState3, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
+    {NewState4, {ack, ?CFG, ?CFG2}} = get_ack(NewState3),
     case gpio:read(Gpio) of
         1 ->
             self() ! {gpio_interrupt,GpioNum,rising};
         0 ->
             ok
     end,
-    {ok, NewState3}.
+    {ok, NewState4}.
 
 handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, gpionum=GpioNum}) ->
     %io:format("handling interrupt~n"),
