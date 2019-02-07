@@ -311,12 +311,12 @@ handle_call({upload_offline_assistance, Filename}, _From, State) ->
     {{Year, Month, Day}, _} = calendar:universal_time(),
     Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
     %io:format("Matching messages ~p~n", [Res]),
-    [send(State, Msg) || Msg <- Msgs],
+    [begin send(State, Msg), timer:sleep(250) end || Msg <- Msgs],
     {reply, ok, State};
 handle_call({upload_online_assistance, Filename}, _From, State) ->
     {ok, Bin} = file:read_file(Filename),
     Msgs = bin_to_messages(Bin, []),
-    [send(State, Msg) || Msg <- Msgs],
+    [begin send(State, Msg), timer:sleep(250) end || Msg <- Msgs],
     {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
