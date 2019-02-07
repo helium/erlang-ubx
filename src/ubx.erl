@@ -44,6 +44,7 @@
 -define(TIME_UTC, 16#40).
 -define(ANO, 16#20).
 -define(NAV5, 16#24).
+-define(NAVX5, 16#23).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -505,7 +506,6 @@ parse(?CFG, ?PRT, <<4:?U1, _Reserved1:?U1, TXReady:?X2, Mode:?X4, _Reserved2:4/b
     {cfg_port, lol};
 parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, _Reserved:2/binary, _AntennaCableDelay:?I2, _RFGroupDelay:?I2, FreqPeriod:?U4, _FreqPeriodLock:?U4, PulseLenRatio:?U4, _PulseLenRatioLock:?U4, _UserConfigDelay:?I4, TPFlags:?X4>>) ->
     io:format("Time pulse ~p, version ~p frequency ~p pulse length ~p~n", [TPIdx, Version, FreqPeriod, PulseLenRatio]),
-
     <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>> = <<TPFlags:32/integer-unsigned-big>>,
     io:format("SyncMode ~p, Grid ~p Polarity ~p AlignToW ~p IsLength ~p IsFreq ~p, LockedOtherSet ~p LockGNSS, ~p TPActive ~p~n", [SyncMode, GridUTCGNSS, ClockPolarity, AlignToToW, IsLength, IsFreq, LockedOtherSet, LockGNSSFreq, TPActive]),
     {cfg_tp5, lol};
@@ -513,6 +513,9 @@ parse(?CFG, ?NAV5, <<Mask:?X2, DynModel:?U1, FixMode:?U1, _Tail/binary>>) ->
     io:format("Mask ~w~n", [Mask]),
     io:format("Dynamic platform model ~p, Fix mode ~p~n", [DynModel, FixMode]),
     {cfg_nav5, lol};
+parse(?CFG, ?NAVX5, <<Version:?U2, _Mask1:?X2, _Mask2:?X4, _Reserved1:2/binary, _MinSVs:?U1, _MaxSVs:?U1, _MinCNO:?U1, _Reserved2:?U1, _InFix3D:?U1, _Reserved3:2/binary, AckAiding:?U1, _WknRollover:?U2, _SigAttenCompMode:?U1, _Reserved4:5/binary, _UsePPP:?U1, _AopCfg:?U1, _Reserved7:2/binary, _AopOrbMaxErr:?U2, _Reserved8:7/binary, _UseAdr:?U1>>) ->
+    io:format("Version ~p AckAiding ~p~n", [Version, AckAiding]),
+    {cfg_navx5, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
@@ -585,6 +588,7 @@ resolve(mon_hw) -> {?MON, ?HW};
 resolve(cfg_port) -> {?CFG, ?PRT};
 resolve(cfg_tp5) -> {?CFG, ?TP5};
 resolve(cfg_nav5) -> {?CFG, ?NAV5};
+resolve(cfg_navx5) -> {?CFG, ?NAVX5};
 resolve(cfg_cfg) -> {?CFG, ?CFG2};
 resolve(tim_tm2) -> {?TIM, ?TM2}.
 
@@ -598,6 +602,7 @@ resolve(?MON, ?HW) -> mon_hw;
 resolve(?CFG, ?PRT) -> cfg_port;
 resolve(?CFG, ?TP5) -> cfg_tp5;
 resolve(?CFG, ?NAV5) -> cfg_nav5;
+resolve(?CFG, ?NAVX5) -> cfg_navx5;
 resolve(?CFG, ?CFG2) -> cfg_cfg;
 resolve(?TIM, ?TM2) -> tim_tm2.
 
