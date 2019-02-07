@@ -24,7 +24,7 @@
 -define(CFG, 16#06).
 -define(TIM, 16#0d).
 -define(NAV, 16#01).
--define(MGA_INI, 16#13).
+-define(MGA, 16#13).
 
 %% message IDs
 -define(TM2, 16#03).
@@ -41,10 +41,11 @@
 -define(TP5, 16#31).
 -define(ANT, 16#13).
 -define(TIMEUTC, 16#21).
--define(TIME_UTC, 16#40).
+-define(INI_TIME_UTC, 16#40).
 -define(ANO, 16#20).
 -define(NAV5, 16#24).
 -define(NAVX5, 16#23).
+-define(ACK_DATA0, 16#60).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -300,7 +301,7 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
             Reserved2 = <<0, 0>>,
             TAccNs = 500000000, %% nanoseconds part of time accuracy
             Packet = <<Type:?U1, Version:?U1, Ref/binary, LeapSecs:?I1, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Minute:?U1, Second:?U1, Reserved1/binary, Nanosecs:?U4, TAccS:?U2, Reserved2/binary, TAccNs:?U4>>,
-            send(State, frame(?MGA_INI, ?TIME_UTC, Packet)),
+            send(State, frame(?MGA, ?INI_TIME_UTC, Packet)),
             {reply, ok, State};
         _ ->
             {reply, {error, invalid_datetime}, State}
@@ -519,6 +520,9 @@ parse(?CFG, ?NAV5, <<Mask:?X2, DynModel:?U1, FixMode:?U1, _Tail/binary>>) ->
 parse(?CFG, ?NAVX5, <<Version:?U2, _Mask1:?X2, _Mask2:?X4, _Reserved1:2/binary, _MinSVs:?U1, _MaxSVs:?U1, _MinCNO:?U1, _Reserved2:?U1, _InFix3D:?U1, _Reserved3:2/binary, AckAiding:?U1, _WknRollover:?U2, _SigAttenCompMode:?U1, _Reserved4:5/binary, _UsePPP:?U1, _AopCfg:?U1, _Reserved7:2/binary, _AopOrbMaxErr:?U2, _Reserved8:7/binary, _UseAdr:?U1>>) ->
     io:format("Version ~p AckAiding ~p~n", [Version, AckAiding]),
     {cfg_navx5, lol};
+parse(?MGA, ?ACK_DATA0, <<Type:?U1, 0, InfoCode:?U1, MsgID:?U1, MsgPayloadStart:4/binary>>) ->
+    io:format("Type ~p InfoCode ~p MsgID ~p MsgPayloadStart ~p~n", [Type, InfoCode, MsgID, MsgPayloadStart]),
+    {mga_ack, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
@@ -593,7 +597,8 @@ resolve(cfg_tp5) -> {?CFG, ?TP5};
 resolve(cfg_nav5) -> {?CFG, ?NAV5};
 resolve(cfg_navx5) -> {?CFG, ?NAVX5};
 resolve(cfg_cfg) -> {?CFG, ?CFG2};
-resolve(tim_tm2) -> {?TIM, ?TM2}.
+resolve(tim_tm2) -> {?TIM, ?TM2};
+resolve(mga_ack) -> {?MGA, ?ACK_DATA0}.
 
 resolve(?NAV, ?PVT) -> nav_pvt;
 resolve(?NAV, ?SOL) -> nav_sol;
@@ -607,7 +612,8 @@ resolve(?CFG, ?TP5) -> cfg_tp5;
 resolve(?CFG, ?NAV5) -> cfg_nav5;
 resolve(?CFG, ?NAVX5) -> cfg_navx5;
 resolve(?CFG, ?CFG2) -> cfg_cfg;
-resolve(?TIM, ?TM2) -> tim_tm2.
+resolve(?TIM, ?TM2) -> tim_tm2;
+resolve(?MGA, ?ACK_DATA0) -> mga_ack.
 
 register_ack(From, State) ->
     Ref = erlang:send_after(5000, self(), ack_timeout),
@@ -629,15 +635,15 @@ fix_type(Byte) ->
 
 find_matching_assistance_messages(<<>>, _, _, _, Acc) ->
     lists:reverse(Acc);
-find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Year, Month, Day, Acc) ->
-    case checksum(<<?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body/binary>>) of
+find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Year, Month, Day, Acc) ->
+    case checksum(<<?MGA:?U1, ?ANO:?U1, Length:?U2, Body/binary>>) of
         {CK_A, CK_B} ->
             %% checksum is OK
             case Body of
                 <<0:?U1, 0:?U1, _SVId:?U1, _GNSSId:?U1, Year:?U1, Month:?U1, Day:?U1, _/binary>> ->
                     %% got a match
                     find_matching_assistance_messages(Tail, Year, Month, Day,
-                                                      [<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+                                                      [<<?HEADER1, ?HEADER2, ?MGA:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
                 _ ->
                     find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
             end;
@@ -647,14 +653,13 @@ find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ?ANO:?U1, 
 
 bin_to_messages(<<>>, Acc) ->
     lists:reverse(Acc);
-bin_to_messages(<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
-    case checksum(<<?MGA_INI:?U1, ID:?U1, Length:?U2, Body/binary>>) of
+bin_to_messages(<<?HEADER1, ?HEADER2, ?MGA:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
+    case checksum(<<?MGA:?U1, ID:?U1, Length:?U2, Body/binary>>) of
         {CK_A, CK_B} ->
             %% checksum is OK
             bin_to_messages(Tail,
-                [<<?HEADER1, ?HEADER2, ?MGA_INI:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+                [<<?HEADER1, ?HEADER2, ?MGA:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
         _ ->
             io:format("dropping message length: ~p", [Length]),
             bin_to_messages(Tail, Acc)
     end.
-
