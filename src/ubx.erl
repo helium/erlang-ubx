@@ -307,17 +307,25 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
             {reply, {error, invalid_datetime}, State}
     end;
 handle_call({upload_offline_assistance, Filename}, _From, State) ->
-    {ok, Bin} = file:read_file(Filename),
-    {{Year, Month, Day}, _} = calendar:universal_time(),
-    Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
-    %io:format("Matching messages ~p~n", [Res]),
-    [ensure_send(State, Msg) || Msg <- Msgs],
-    {reply, ok, State};
+    case file:read_file(Filename) of
+        {ok, Bin} ->
+            {{Year, Month, Day}, _} = calendar:universal_time(),
+            Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
+            %io:format("Matching messages ~p~n", [Res]),
+            [ensure_send(State, Msg) || Msg <- Msgs],
+            {reply, ok, State};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end;
 handle_call({upload_online_assistance, Filename}, _From, State) ->
-    {ok, Bin} = file:read_file(Filename),
-    Msgs = bin_to_messages(Bin, []),
-    [ensure_send(State, Msg) || Msg <- Msgs],
-    {reply, ok, State};
+    case file:read_file(Filename) of
+        {ok, Bin} ->
+            Msgs = bin_to_messages(Bin, []),
+            [ensure_send(State, Msg) || Msg <- Msgs],
+            {reply, ok, State};
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end;
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
