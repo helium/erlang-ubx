@@ -311,12 +311,12 @@ handle_call({upload_offline_assistance, Filename}, _From, State) ->
     {{Year, Month, Day}, _} = calendar:universal_time(),
     Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
     %io:format("Matching messages ~p~n", [Res]),
-    [send(State, Msg) || Msg <- Msgs],
+    [ensure_send(State, Msg) || Msg <- Msgs],
     {reply, ok, State};
 handle_call({upload_online_assistance, Filename}, _From, State) ->
     {ok, Bin} = file:read_file(Filename),
     Msgs = bin_to_messages(Bin, []),
-    [send(State, Msg) || Msg <- Msgs],
+    [ensure_send(State, Msg) || Msg <- Msgs],
     {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
@@ -331,6 +331,26 @@ send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
 
+ensure_send(State, <<>>) ->
+    {reply, ok, State};
+ensure_send(State, Msg) ->
+    send(State, Msg),
+    case get_packet(State, <<>>, 10000) of
+        {NewState, {mga_ack, _} = MgaAck} ->
+            case MgaAck of
+                {mga_ack, {1, 0, ID, PayloadStart}} ->
+                    io:format("assistance accepted ID ~p PayloadStart ~p~n", [ID, PayloadStart]);
+                {mga_ack, {Type, InfoCode, ID, PayloadStart}} ->
+                    io:format("assistance rejected ID ~p PayloadStart ~p Type ~p InfoCode ~p~n", [ID, PayloadStart, Type, InfoCode])
+            end,
+            {NewState, MgaAck};
+        {NewState, {error, Error}} ->
+            io:format("Error ~p; resending assistance data~n", [Error]),
+            ensure_send(NewState, Msg);
+        {NewState, Other} ->
+            io:format("non-mga_ack packet ~p; resending assistance data~n", [Other]),
+            ensure_send(NewState, Msg)
+    end.
 
 recv(State=#state{device=Device}, Length) when Length =< 128 ->
     %io:format("SPI read ~p~n", [Length]),
@@ -369,7 +389,7 @@ get_ack(State) ->
         {NewState, {error, _} = Error} ->
             {NewState, Error};
         {NewState, Other} ->
-            io:format("other packet ~p~n", [Other]),
+            io:format("non-ack or non-nack packet ~p~n", [Other]),
             NewState#state.controlling_process ! {packet, Other},
             get_ack(NewState)
     end.
@@ -487,6 +507,10 @@ parse(?MON, ?VER, <<SWVersion:30/binary, HWVersion:10/binary, Tail/binary>>) ->
     HW = hd(binary:split(HWVersion, <<0>>)),
     Ext = parse_extensions(Tail, []),
     {mon_ver, {SW, HW, Ext}};
+%% UBX-MGA-ACK-DATA0
+parse(?MGA, ?ACK_DATA0, <<Type:?U1, 0, InfoCode:?U1, ID:?U1, PayloadStart:4/binary>>) ->
+    io:format("Type ~p InfoCode ~p ID ~p PayloadStart ~p~n", [Type, InfoCode, ID, PayloadStart]),
+    {mga_ack, {Type, InfoCode, ID, PayloadStart}};
 %% UBX-CFG-MSG
 parse(?CFG, ?MSG, <<MsgClass:?U1, MsgID:?U1, Rates/binary>>) ->
     io:format("Rate for ~p ~p: ~p~n", [MsgClass, MsgID, Rates]),
@@ -520,9 +544,6 @@ parse(?CFG, ?NAV5, <<Mask:?X2, DynModel:?U1, FixMode:?U1, _Tail/binary>>) ->
 parse(?CFG, ?NAVX5, <<Version:?U2, _Mask1:?X2, _Mask2:?X4, _Reserved1:2/binary, _MinSVs:?U1, _MaxSVs:?U1, _MinCNO:?U1, _Reserved2:?U1, _InFix3D:?U1, _Reserved3:2/binary, AckAiding:?U1, _WknRollover:?U2, _SigAttenCompMode:?U1, _Reserved4:5/binary, _UsePPP:?U1, _AopCfg:?U1, _Reserved7:2/binary, _AopOrbMaxErr:?U2, _Reserved8:7/binary, _UseAdr:?U1>>) ->
     io:format("Version ~p AckAiding ~p~n", [Version, AckAiding]),
     {cfg_navx5, lol};
-parse(?MGA, ?ACK_DATA0, <<Type:?U1, 0, InfoCode:?U1, MsgID:?U1, MsgPayloadStart:4/binary>>) ->
-    io:format("Type ~p InfoCode ~p MsgID ~p MsgPayloadStart ~p~n", [Type, InfoCode, MsgID, MsgPayloadStart]),
-    {mga_ack, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
