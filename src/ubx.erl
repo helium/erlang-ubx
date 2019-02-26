@@ -24,7 +24,7 @@
 -define(CFG, 16#06).
 -define(TIM, 16#0d).
 -define(NAV, 16#01).
--define(MGA_INI, 16#13).
+-define(MGA, 16#13).
 
 %% message IDs
 -define(TM2, 16#03).
@@ -41,7 +41,11 @@
 -define(TP5, 16#31).
 -define(ANT, 16#13).
 -define(TIMEUTC, 16#21).
--define(TIME_UTC, 16#40).
+-define(INI_TIME_UTC, 16#40).
+-define(ANO, 16#20).
+-define(NAV5, 16#24).
+-define(NAVX5, 16#23).
+-define(ACK_DATA0, 16#60).
 
 
 -type fix_type() :: non_neg_integer(). %% gps fix type
@@ -82,7 +86,6 @@
 
 -export_type([nav_pvt/0, nav_sat/0, nav_posllh/0, nav_sol/0, nav_timeutc/0, fix_type/0]).
 
-
 -record(state, {
           device :: port() | pid(),
           buffer = <<>> :: binary(),
@@ -94,7 +97,8 @@
          }).
 
 -export([start_link/4, enable_message/3, disable_message/2, fix_type/1, stop/2,
-         poll_message/2, poll_message/3, set_time_utc/2, parse/1]).
+         poll_message/2, poll_message/3, set_time_utc/2, parse/1,
+         upload_offline_assistance/2, upload_online_assistance/2]).
 
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3]).
 
@@ -120,8 +124,14 @@ poll_message(Pid, Msg, Payload) ->
 set_time_utc(Pid, DateTime) ->
     gen_server:call(Pid, {set_time_utc, DateTime}).
 
+upload_online_assistance(Pid, File) ->
+    gen_server:call(Pid, {upload_online_assistance, File}, infinity).
+
 stop(Pid, Reason) ->
     gen_server:stop(Pid, Reason, infinity).
+
+upload_offline_assistance(Pid, File) ->
+    gen_server:call(Pid, {upload_offline_assistance, File}, infinity).
 
 init([Filename, GpioNum, Options, ControllingProcess]) ->
     {ok, Spi} = spi:start_link(Filename, Options),
@@ -175,16 +185,19 @@ init([Filename, GpioNum, Options, ControllingProcess]) ->
     send(NewState, frame(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, Reserved/binary, AntennaCableDelay:?I2, RFGroupDelay:?I2, FreqPeriod:?U4, FreqPeriodLock:?U4, PulseLenRatio:?U4, PulseLenRatioLock:?U4, UserConfigDelay:?I4, TPFlags:?X4>>)),
 
     {NewState2, {ack, ?CFG, ?TP5}} = get_ack(State),
+    %% Enable flow control
+    send(NewState2, frame(?CFG, ?NAVX5, <<2:?U2, (1 bsl 10):?X2, 0:?X4, 0:(9*8)/integer, 1:?U1, 0:(22*8)/integer>>)),
+    {NewState3, {ack, ?CFG, ?NAVX5}} = get_ack(NewState2),
     %% PIO changes don't take effect until a config save
-    send(NewState2, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
-    {NewState3, {ack, ?CFG, ?CFG2}} = get_ack(NewState2),
+    send(NewState3, frame(?CFG, ?CFG2, <<0:?X4, 16#ff, 16#ff, 0, 0, 0:?X4, 23:?X1>>)),
+    {NewState4, {ack, ?CFG, ?CFG2}} = get_ack(NewState3),
     case gpio:read(Gpio) of
         1 ->
             self() ! {gpio_interrupt,GpioNum,rising};
         0 ->
             ok
     end,
-    {ok, NewState3}.
+    {ok, NewState4}.
 
 handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, gpionum=GpioNum}) ->
     %io:format("handling interrupt~n"),
@@ -192,7 +205,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
         {NewState, {error, Error}} ->
                                io:format("error ~p~n", [Error]),
                         {ok, NewState};
-        {NewState, {ack, ?CFG, ?MSG}} ->
+        {NewState, {ack, ?CFG, _}} ->
                         io:format("ack~n"),
             case Ack of
                 {From, Ref} ->
@@ -202,7 +215,7 @@ handle_info({gpio_interrupt,GpioNum,rising}, State = #state{ack=Ack, poll=Poll, 
                 undefined ->
                     {ok, NewState}
             end;
-        {NewState, {nack, ?CFG, ?MSG}} ->
+        {NewState, {nack, ?CFG, _}} ->
                         io:format("nack~n"),
             case Ack of
                 {From, Ref} ->
@@ -288,17 +301,56 @@ handle_call({set_time_utc, DateTime}, _From, State) ->
             Reserved2 = <<0, 0>>,
             TAccNs = 500000000, %% nanoseconds part of time accuracy
             Packet = <<Type:?U1, Version:?U1, Ref/binary, LeapSecs:?I1, Year:?U2, Month:?U1, Day:?U1, Hour:?U1, Minute:?U1, Second:?U1, Reserved1/binary, Nanosecs:?U4, TAccS:?U2, Reserved2/binary, TAccNs:?U4>>,
-            send(State, frame(?MGA_INI, ?TIME_UTC, Packet)),
+            send(State, frame(?MGA, ?INI_TIME_UTC, Packet)),
             {reply, ok, State};
         _ ->
             {reply, {error, invalid_datetime}, State}
     end;
+handle_call({upload_offline_assistance, Filename}, _From, State) ->
+    {ok, Bin} = file:read_file(Filename),
+    {{Year, Month, Day}, _} = calendar:universal_time(),
+    Msgs = find_matching_assistance_messages(Bin, Year rem 100, Month, Day, []),
+    %io:format("Matching messages ~p~n", [Res]),
+    [ensure_send(State, Msg) || Msg <- Msgs],
+    {reply, ok, State};
+handle_call({upload_online_assistance, Filename}, _From, State) ->
+    {ok, Bin} = file:read_file(Filename),
+    Msgs = bin_to_messages(Bin, []),
+    [ensure_send(State, Msg) || Msg <- Msgs],
+    {reply, ok, State};
 handle_call(Msg, _From, State) ->
     {reply, {unknown_call, Msg}, State}.
 
+send(_, <<>>) ->
+    ok;
+send(S=#state{device=Device}, <<Packet:128/binary, Tail/binary>>) ->
+    io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
+    spi:transfer(Device, Packet),
+    send(S, Tail);
 send(#state{device=Device}, Packet) ->
     io:format("Sending~s~n", [lists:flatten([ io_lib:format(" ~.16b", [X]) || <<X:8/integer>> <= Packet ])]),
     spi:transfer(Device, Packet).
+
+ensure_send(State, <<>>) ->
+    {reply, ok, State};
+ensure_send(State, Msg) ->
+    send(State, Msg),
+    case get_packet(State, <<>>, 10000) of
+        {NewState, {mga_ack, _} = MgaAck} ->
+            case MgaAck of
+                {mga_ack, {1, 0, ID, PayloadStart}} ->
+                    io:format("assistance accepted ID ~p PayloadStart ~p~n", [ID, PayloadStart]);
+                {mga_ack, {Type, InfoCode, ID, PayloadStart}} ->
+                    io:format("assistance rejected ID ~p PayloadStart ~p Type ~p InfoCode ~p~n", [ID, PayloadStart, Type, InfoCode])
+            end,
+            {NewState, MgaAck};
+        {NewState, {error, Error}} ->
+            io:format("Error ~p; resending assistance data~n", [Error]),
+            ensure_send(NewState, Msg);
+        {NewState, Other} ->
+            io:format("non-mga_ack packet ~p; resending assistance data~n", [Other]),
+            ensure_send(NewState, Msg)
+    end.
 
 recv(State=#state{device=Device}, Length) when Length =< 128 ->
     %io:format("SPI read ~p~n", [Length]),
@@ -337,7 +389,7 @@ get_ack(State) ->
         {NewState, {error, _} = Error} ->
             {NewState, Error};
         {NewState, Other} ->
-            io:format("other packet ~p~n", [Other]),
+            io:format("non-ack or non-nack packet ~p~n", [Other]),
             NewState#state.controlling_process ! {packet, Other},
             get_ack(NewState)
     end.
@@ -455,6 +507,10 @@ parse(?MON, ?VER, <<SWVersion:30/binary, HWVersion:10/binary, Tail/binary>>) ->
     HW = hd(binary:split(HWVersion, <<0>>)),
     Ext = parse_extensions(Tail, []),
     {mon_ver, {SW, HW, Ext}};
+%% UBX-MGA-ACK-DATA0
+parse(?MGA, ?ACK_DATA0, <<Type:?U1, 0, InfoCode:?U1, ID:?U1, PayloadStart:4/binary>>) ->
+    io:format("Type ~p InfoCode ~p ID ~p PayloadStart ~p~n", [Type, InfoCode, ID, PayloadStart]),
+    {mga_ack, {Type, InfoCode, ID, PayloadStart}};
 %% UBX-CFG-MSG
 parse(?CFG, ?MSG, <<MsgClass:?U1, MsgID:?U1, Rates/binary>>) ->
     io:format("Rate for ~p ~p: ~p~n", [MsgClass, MsgID, Rates]),
@@ -478,10 +534,16 @@ parse(?CFG, ?PRT, <<4:?U1, _Reserved1:?U1, TXReady:?X2, Mode:?X4, _Reserved2:4/b
     {cfg_port, lol};
 parse(?CFG, ?TP5, <<TPIdx:?U1, Version:?U1, _Reserved:2/binary, _AntennaCableDelay:?I2, _RFGroupDelay:?I2, FreqPeriod:?U4, _FreqPeriodLock:?U4, PulseLenRatio:?U4, _PulseLenRatioLock:?U4, _UserConfigDelay:?I4, TPFlags:?X4>>) ->
     io:format("Time pulse ~p, version ~p frequency ~p pulse length ~p~n", [TPIdx, Version, FreqPeriod, PulseLenRatio]),
-
     <<0:18/integer, SyncMode:3/integer-unsigned-big, GridUTCGNSS:4/integer-unsigned-big, ClockPolarity:1/integer, AlignToToW:1/integer, IsLength:1/integer, IsFreq:1/integer, LockedOtherSet:1/integer, LockGNSSFreq:1/integer, TPActive:1/integer>> = <<TPFlags:32/integer-unsigned-big>>,
     io:format("SyncMode ~p, Grid ~p Polarity ~p AlignToW ~p IsLength ~p IsFreq ~p, LockedOtherSet ~p LockGNSS, ~p TPActive ~p~n", [SyncMode, GridUTCGNSS, ClockPolarity, AlignToToW, IsLength, IsFreq, LockedOtherSet, LockGNSSFreq, TPActive]),
     {cfg_tp5, lol};
+parse(?CFG, ?NAV5, <<Mask:?X2, DynModel:?U1, FixMode:?U1, _Tail/binary>>) ->
+    io:format("Mask ~w~n", [Mask]),
+    io:format("Dynamic platform model ~p, Fix mode ~p~n", [DynModel, FixMode]),
+    {cfg_nav5, lol};
+parse(?CFG, ?NAVX5, <<Version:?U2, _Mask1:?X2, _Mask2:?X4, _Reserved1:2/binary, _MinSVs:?U1, _MaxSVs:?U1, _MinCNO:?U1, _Reserved2:?U1, _InFix3D:?U1, _Reserved3:2/binary, AckAiding:?U1, _WknRollover:?U2, _SigAttenCompMode:?U1, _Reserved4:5/binary, _UsePPP:?U1, _AopCfg:?U1, _Reserved7:2/binary, _AopOrbMaxErr:?U2, _Reserved8:7/binary, _UseAdr:?U1>>) ->
+    io:format("Version ~p AckAiding ~p~n", [Version, AckAiding]),
+    {cfg_navx5, lol};
 parse(A, B, C) ->
     io:format("unknown message 0x~.16b 0x~.16b ~p~n", [A, B, C]),
     {unknown, {A, B, C}}.
@@ -501,7 +563,7 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
     <<0:9/integer, _DoCorrUsed:1/integer, _CrCorrUsed:1/integer, _PrCorrUsed:1/integer,
       _:1/integer, _SLASCorrUsed:1/integer, _RTCMCorrUsed:1/integer, _SBASCorrUsed:1/integer,
       _:1/integer, _AOPAvail:1/integer, _ANOAvail:1/integer, _AlmanacAvail:1/integer,
-      _EphemerisAvail:1/integer, _OrbitSource:3/integer-unsigned-big, _Smoothed:1/integer,
+      _EphemerisAvail:1/integer, OrbitSource:1/integer, _Reserved:2/integer-unsigned-big, _Smoothed:1/integer,
       _DiffCorr:1/integer, Health:2/integer-unsigned-big, SVUsed:1/integer,
       Quality:3/integer-unsigned-big>> = <<Flags:32/integer-unsigned-big>>,
     Info = #{
@@ -512,7 +574,8 @@ parse_satellites(<<GNSSId:?U1, SvId:?U1, CNO:?U1, Elevation:?I1, Azimuth:?I2, _P
              quality => Quality,
              used => SVUsed == 1,
              elevation => Elevation,
-             azimuth => Azimuth},
+             azimuth => Azimuth,
+             orbit => OrbitSource},
     parse_satellites(Tail, [Info | Acc]).
 
 sat_id(0) ->
@@ -552,7 +615,11 @@ resolve(mon_ver) -> {?MON, ?VER};
 resolve(mon_hw) -> {?MON, ?HW};
 resolve(cfg_port) -> {?CFG, ?PRT};
 resolve(cfg_tp5) -> {?CFG, ?TP5};
-resolve(tim_tm2) -> {?TIM, ?TM2}.
+resolve(cfg_nav5) -> {?CFG, ?NAV5};
+resolve(cfg_navx5) -> {?CFG, ?NAVX5};
+resolve(cfg_cfg) -> {?CFG, ?CFG2};
+resolve(tim_tm2) -> {?TIM, ?TM2};
+resolve(mga_ack) -> {?MGA, ?ACK_DATA0}.
 
 resolve(?NAV, ?PVT) -> nav_pvt;
 resolve(?NAV, ?SOL) -> nav_sol;
@@ -563,7 +630,11 @@ resolve(?MON, ?VER) -> mon_ver;
 resolve(?MON, ?HW) -> mon_hw;
 resolve(?CFG, ?PRT) -> cfg_port;
 resolve(?CFG, ?TP5) -> cfg_tp5;
-resolve(?TIM, ?TM2) -> tim_tm2.
+resolve(?CFG, ?NAV5) -> cfg_nav5;
+resolve(?CFG, ?NAVX5) -> cfg_navx5;
+resolve(?CFG, ?CFG2) -> cfg_cfg;
+resolve(?TIM, ?TM2) -> tim_tm2;
+resolve(?MGA, ?ACK_DATA0) -> mga_ack.
 
 register_ack(From, State) ->
     Ref = erlang:send_after(5000, self(), ack_timeout),
@@ -581,4 +652,35 @@ fix_type(Byte) ->
         3 -> fix_3d;
         4 -> gnss_and_dead_reckoning;
         5 -> time_only
+    end.
+
+find_matching_assistance_messages(<<>>, _, _, _, Acc) ->
+    lists:reverse(Acc);
+find_matching_assistance_messages(<<?HEADER1, ?HEADER2, ?MGA:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Year, Month, Day, Acc) ->
+    case checksum(<<?MGA:?U1, ?ANO:?U1, Length:?U2, Body/binary>>) of
+        {CK_A, CK_B} ->
+            %% checksum is OK
+            case Body of
+                <<0:?U1, 0:?U1, _SVId:?U1, _GNSSId:?U1, Year:?U1, Month:?U1, Day:?U1, _/binary>> ->
+                    %% got a match
+                    find_matching_assistance_messages(Tail, Year, Month, Day,
+                                                      [<<?HEADER1, ?HEADER2, ?MGA:?U1, ?ANO:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+                _ ->
+                    find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
+            end;
+        _Other ->
+            find_matching_assistance_messages(Tail, Year, Month, Day, Acc)
+    end.
+
+bin_to_messages(<<>>, Acc) ->
+    lists:reverse(Acc);
+bin_to_messages(<<?HEADER1, ?HEADER2, ?MGA:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1, Tail/binary>>, Acc) ->
+    case checksum(<<?MGA:?U1, ID:?U1, Length:?U2, Body/binary>>) of
+        {CK_A, CK_B} ->
+            %% checksum is OK
+            bin_to_messages(Tail,
+                [<<?HEADER1, ?HEADER2, ?MGA:?U1, ID:?U1, Length:?U2, Body:Length/binary, CK_A:?U1, CK_B:?U1>>|Acc]);
+        _ ->
+            io:format("dropping message length: ~p", [Length]),
+            bin_to_messages(Tail, Acc)
     end.
