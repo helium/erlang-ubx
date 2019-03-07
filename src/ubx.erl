@@ -524,11 +524,22 @@ parse(?CFG, ?MSG, <<MsgClass:?U1, MsgID:?U1, Rates/binary>>) ->
     io:format("Rate for ~p ~p: ~p~n", [MsgClass, MsgID, Rates]),
     {cfg_msg, lol};
 %% UBX-TIM-TM2
-parse(?TIM, ?TM2, <<Channel:?U1, NewRisingEdge:1/bits, Time:1/bits, UTC:1/bits, TimeBase:2/bits, NewFallingEdge:1/bits, Run:1/bits, Mode:1/bits,
+parse(?TIM, ?TM2, <<Channel:?U1, NewRisingEdge:1/integer, Time:1/integer, UTC:1/integer, TimeBase:2/integer, NewFallingEdge:1/integer, Run:1/integer, Mode:1/integer,
                     Count:?U2, WNR:?U2, WNF:?U2, ToWMsR:?U4, ToWSubMsR:?U4, ToWMsF:?U4, ToWSubMsF:?U4, AccEst:?U4>>) ->
     io:format("time mark: Channel ~p, NewRisingEdge ~p, Time ~p, UTC ~p, Timebase ~p, NewFallingEdge ~p, Run ~p, Mode ~p~n", [Channel, NewRisingEdge, Time, UTC, TimeBase, NewFallingEdge, Run, Mode]),
     io:format("           Count ~p, WNR ~p WNF ~p towMsR ~p towSubMsR ~p towMsF ~p towSubMsf ~p accEst ~p~n", [Count, WNR, WNF, ToWMsR, ToWSubMsR, ToWMsF, ToWSubMsF, AccEst]),
-    {tim_tm2, lol};
+    RisingTime = parse_gps_time(WNR, ToWMsR, ToWSubMsR),
+    FallingTime = parse_gps_time(WNR, ToWMsF, ToWSubMsF),
+    {tim_tm2, #{
+                channel => Channel,
+                rising => NewRisingEdge == 1,
+                falling => NewFallingEdge == 1,
+                count => Count,
+                valid => Time == 1,
+                rising_edge_time => RisingTime,
+                falling_edge_time => FallingTime,
+                accuracy => AccEst
+               }};
 parse(?MON, ?HW, <<PinSel:?X4, PinBank:?X4, PinDir:?X4, PinVal:?X4, NoisePerMS:?U2, AGCCnt:?U2, AStatus:?U1, APower:?U1, _Flags:?X1, _:?U1, UsedMask:?X4, VP:17/binary, _/binary>>) ->
     io:format("Hardware Status: PinSel ~p, PinBank ~p, PinDir ~p, PinVal ~p, NoisePerMS ~p ACGCount ~p AntennaStatus ~p AntennaPower ~p~n", [PinSel, PinBank, PinDir, PinVal, NoisePerMS, AGCCnt, AStatus, APower]),
     io:format("                 used mask ~p, Pin mapping ~w~n", [UsedMask, VP]),
@@ -692,3 +703,17 @@ bin_to_messages(<<?HEADER1, ?HEADER2, ?MGA:?U1, ID:?U1, Length:?U2, Body:Length/
             io:format("dropping message length: ~p", [Length]),
             bin_to_messages(Tail, Acc)
     end.
+
+%% The GPS Epoch began january 6th 1980, long may it reign
+-define(GPS_EPOCH, calendar:datetime_to_gregorian_seconds({{1980, 1, 6}, {0, 0, 0}})).
+%% The UNIX epoch began January 1st 1970, long may it reign
+-define(UNIX_EPOCH, calendar:datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}})).
+%% Calculate the difference between the GPS epoch and the UNIX epoch
+-define(GPS_TO_UNIX_EPOCH_OFFSET, ?GPS_EPOCH - ?UNIX_EPOCH).
+-define(SECONDS_IN_WEEK, 604800).
+
+%% turn GPS time into unix time, as a 2-tuple of {Seconds, Nanoseconds}
+parse_gps_time(GPSWeek, TimeOfWeekMilliseconds, TimeOfWeekSubMilliseconds) ->
+    Seconds = ?GPS_TO_UNIX_EPOCH_OFFSET + (?SECONDS_IN_WEEK * GPSWeek) + (TimeOfWeekMilliseconds div 1000),
+    NanoSeconds = ((TimeOfWeekMilliseconds rem 1000) * 1000000) + TimeOfWeekSubMilliseconds,
+    {Seconds, NanoSeconds}.
