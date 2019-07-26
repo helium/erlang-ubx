@@ -1,4 +1,4 @@
-.PHONY: compile test release
+.PHONY: compile
 
 REBAR=./rebar3
 
@@ -10,9 +10,3 @@ typecheck:
 
 clean:
 	$(REBAR) clean
-
-test:
-	$(REBAR) ct
-
-release:
-	$(REBAR) release -d false
